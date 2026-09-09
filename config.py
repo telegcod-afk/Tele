@@ -243,7 +243,7 @@ def env_int(
 
 CHANNEL_ID = env_int(
     "CHANNEL_ID",
-    -1003978483597,
+    -1004441808999,
 )
 
 
