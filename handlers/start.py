@@ -562,7 +562,7 @@ async def render_home_fast(
 
     if lang == "en":
         text = (
-            "<b>✨ MARKET DASHBOARD ✨</b>\n\n"
+            "<b>✨ TELECOD ✨</b>\n\n"
             f"ID: <code>{user_id}</code>\n"
             f"🎨 Creator: <b>{'VERIFIED ✅' if is_creator else 'NOT VERIFIED 🔒'}</b>\n"
             f"Balance: {balance_text}\n"
@@ -574,7 +574,7 @@ async def render_home_fast(
         )
     else:
         text = (
-            "<b>✨ MARKET DASHBOARD ✨</b>\n\n"
+            "<b>✨ TELECOD ✨</b>\n\n"
             f"ID : <code>{user_id}</code>\n"
             f"{creator_text}\n"
             f"Saldo : {balance_text}\n"
