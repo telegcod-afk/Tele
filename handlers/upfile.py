@@ -10,7 +10,7 @@ from html import escape
 from typing import Dict, Optional
 
 from aiogram import Router, F
-from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter, TelegramServerError, TelegramNetworkError
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -75,6 +75,7 @@ _storage_semaphore = asyncio.Semaphore(
 )
 
 _channel_send_lock = asyncio.Lock()
+_storage_ready = False
 _last_channel_send = 0.0
 CHANNEL_SEND_DELAY = 1.0
 
@@ -363,61 +364,91 @@ async def copy_to_storage(
     - Tidak menggunakan gather untuk 200 media.
     """
 
+    global _storage_ready
+
+    if not STORAGE_CHANNEL_ID:
+        raise RuntimeError("STORAGE_CHANNEL_ID belum dikonfigurasi")
+
+    try:
+        message_id = int(message_id)
+        from_chat_id = int(from_chat_id)
+    except (TypeError, ValueError):
+        raise ValueError("chat_id/message_id upload tidak valid")
+
     async with _storage_semaphore:
-
-        while True:
-
+        # Preflight hanya sekali: memastikan bot benar-benar dapat mengakses
+        # storage channel. Ini mencegah error check_response yang berulang
+        # untuk setiap media jika channel ID/admin permission salah.
+        if not _storage_ready:
             try:
+                await bot.get_chat(chat_id=STORAGE_CHANNEL_ID)
+                _storage_ready = True
+            except Exception as e:
+                logger.error(
+                    "STORAGE PREFLIGHT FAILED | channel=%s | error=%s",
+                    STORAGE_CHANNEL_ID, e,
+                )
+                raise RuntimeError(
+                    "Bot tidak dapat mengakses STORAGE_CHANNEL_ID. "
+                    "Pastikan bot menjadi admin di channel storage dan ID benar."
+                ) from e
 
+        retries = 0
+        while True:
+            try:
                 copied = await bot.copy_message(
                     chat_id=STORAGE_CHANNEL_ID,
                     from_chat_id=from_chat_id,
                     message_id=message_id,
                 )
-
                 if COPY_DELAY > 0:
-
-                    await asyncio.sleep(
-                        COPY_DELAY
-                    )
-
+                    await asyncio.sleep(COPY_DELAY)
                 return copied
 
             except TelegramRetryAfter as e:
-
-                retry_after = max(
-                    float(e.retry_after),
-                    0.5,
-                )
-
+                retries += 1
+                retry_after = max(float(e.retry_after), 1.0)
                 logger.warning(
-                    "STORAGE RATE LIMIT | retry_after=%.2fs",
-                    retry_after,
+                    "STORAGE FLOOD CONTROL | retry_after=%.2fs | retry=%s",
+                    retry_after, retries,
                 )
+                await asyncio.sleep(retry_after + 0.3)
 
-                await asyncio.sleep(
-                    retry_after + 0.2
+            except (TelegramServerError, TelegramNetworkError) as e:
+                retries += 1
+                if retries > 5:
+                    logger.exception(
+                        "STORAGE RETRY EXHAUSTED | from_chat=%s | message=%s",
+                        from_chat_id, message_id,
+                    )
+                    raise
+                wait = min(2 ** retries, 10)
+                logger.warning(
+                    "STORAGE TEMPORARY ERROR | retry=%s | wait=%ss | error=%s",
+                    retries, wait, e,
                 )
+                await asyncio.sleep(wait)
 
             except TelegramBadRequest as e:
-
+                error = str(e).lower()
+                # Configuration/permission errors are permanent for this item.
                 logger.error(
                     "STORAGE BAD REQUEST | from_chat=%s | message=%s | error=%s",
-                    from_chat_id,
-                    message_id,
-                    e,
+                    from_chat_id, message_id, e,
                 )
-
+                if any(x in error for x in (
+                    "chat not found", "not enough rights", "have no rights",
+                    "message to copy not found", "message not found",
+                    "chat_id is empty",
+                )):
+                    raise
                 raise
 
             except Exception:
-
                 logger.exception(
                     "STORAGE COPY ERROR | from_chat=%s | message=%s",
-                    from_chat_id,
-                    message_id,
+                    from_chat_id, message_id,
                 )
-
                 raise
 
 

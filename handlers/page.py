@@ -156,25 +156,22 @@ async def send_page(bot, chat_id, user_id, code, page=1):
     share_media = file["share_media"]
     protect = not bool(True if share_media is None else share_media)
 
-    # Album = max 10 Telegram media. This is intentionally one album per page.
+    # Album = max 10 Telegram media. Each item gets its own caption so the
+    # Media Code / bot / position travels with the media when shared.
     album = []
-    caption = (
-        f"🔑 <b>CODE:</b> <code>{code}</code>\n"
-        f"🤖 <b>BOT:</b> @{(await bot.get_me()).username or 'bot'}\n"
-        f"📦 <b>MEDIA:</b> {start + 1}-{start + len(chunk)} / {len(media)}\n"
-        f"📄 <b>PAGE:</b> {page}/{total_pages}"
-    )
+    me = await bot.get_me()
+    bot_name = f"@{me.username}" if me.username else "@bot"
     for idx, item in enumerate(chunk):
         if not isinstance(item, dict) or not item.get("file_id"):
             continue
         fid = item["file_id"]
         typ = normalize_type(item.get("type"))
-        media_code = f"{code}-m{start + idx + 1:03d}"
+        position = start + idx + 1
+        media_code = f"{code}-m{position:03d}"
         cap = (
-            f"🔑 <b>MEDIA CODE:</b> <code>{media_code}</code>\\n"
-            f"🔐 <b>FILE CODE:</b> <code>{code}</code>\\n"
-            f"🤖 <b>BOT:</b> {caption.split('🤖 <b>BOT:</b> ',1)[1].split('\\n',1)[0] if '🤖 <b>BOT:</b> ' in caption else 'bot'}\\n"
-            f"📦 <b>MEDIA:</b> {start + idx + 1}/{len(media)}"
+            f"🔑 <b>{media_code}</b> • 🤖 {bot_name} • "
+            f"📦 <b>Media {position}/{len(media)}</b>\n"
+            f"🔐 Code: <code>{code}</code> • 📄 Page {page}/{total_pages}"
         )
         if typ == "photo":
             album.append(InputMediaPhoto(media=fid, caption=cap, parse_mode="HTML"))

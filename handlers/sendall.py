@@ -81,20 +81,20 @@ async def send_all(bot, chat_id, code, file, user_level, offset=0, status_messag
             failed += 1
             continue
 
-        # Every media gets a compact code/bot/index header before the copied media.
-        try:
-            await bot.send_message(
-                chat_id,
-                f"🔑 <code>{code}-m{pos:03d}</code> • 🤖 {bot_name} • 📦 <b>Media {pos}/{total}</b>",
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
+        # IMPORTANT: metadata is attached to the media itself, not sent as a
+        # separate bubble. When the media is forwarded/shared, its caption
+        # travels with it.
+        media_code = f"{code}-m{pos:03d}"
+        media_caption = (
+            f"🔑 <b>{media_code}</b> • 🤖 {bot_name} • "
+            f"📦 <b>Media {pos}/{total}</b>\n"
+            f"🔐 Code: <code>{code}</code>"
+        )
 
         try:
             result = await safe_copy_from_storage(
                 bot, chat_id, message_id, protect_content=protect,
-                delay=0.0)
+                delay=0.0, caption=media_caption)
             if result is not None:
                 success += 1
             else:
