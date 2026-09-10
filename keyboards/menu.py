@@ -18,41 +18,20 @@ def home_kb(
     lang: str = "id",
     is_creator: bool = False,
 ) -> InlineKeyboardMarkup:
-    idn = lang == "id"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                _button(
-                    "📤 Upfile",
-                    callback_data="upfile",
-                ),
-                _button(
-                    "📥 Getfile",
-                    callback_data="getfile",
-                ),
-            ],
-            [
-                _button(
-                    "🛍️ Marketplace",
-                    callback_data="marketplace",
-                ),
-                _button(
-                    "👤 Akun" if idn else "👤 Account",
-                    callback_data="account",
-                ),
-            ],
-            [
-                _button(
-                    "💎 VIP / 🎨 Kreator" if idn else "💎 VIP / 🎨 Creator",
-                    callback_data="vip_creator",
-                ),
-                _button(
-                    "📂 Menu Lainnya" if idn else "📂 More Menu",
-                    callback_data="menu_lainnya",
-                ),
-            ],
-        ]
-    )
+    """Clean 2-column main dashboard keyboard."""
+    labels = {
+        "id": ("📤 Up File", "📥 Get File", "⭐ Poin", "🛍️ Marketplace", "👤 Akun", "💎 VIP / 🎨 Kreator", "📂 Menu Lainnya", "❓ Help"),
+        "en": ("📤 Up File", "📥 Get File", "⭐ Points", "🛍️ Marketplace", "👤 Account", "💎 VIP / 🎨 Creator", "📂 More Menu", "❓ Help"),
+        "zh": ("📤 上传文件", "📥 获取文件", "⭐ 积分", "🛍️ 市场", "👤 账户", "💎 VIP / 🎨 创作者", "📂 更多菜单", "❓ 帮助"),
+    }
+    L=labels.get(lang,labels["id"])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_button(L[0],callback_data="upfile"),_button(L[1],callback_data="getfile")],
+        [_button(L[2],callback_data="points"),_button(L[3],callback_data="marketplace")],
+        [_button(L[4],callback_data="account"),_button(L[5],callback_data="vip_creator")],
+        [_button(L[6],callback_data="menu_lainnya"),_button(L[7],callback_data="help")],
+    ])
+
 # ============================================================
 # ACCOUNT
 # ============================================================
