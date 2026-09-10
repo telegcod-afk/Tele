@@ -29,6 +29,7 @@ async def safe_copy_from_storage(
     protect_content=False,
     max_retries=6,
     delay=_COPY_DELAY,
+    caption=None,
 ):
     """Copy one stored Telegram message with flood-control protection.
 
@@ -61,6 +62,8 @@ async def safe_copy_from_storage(
                     from_chat_id=STORAGE_CHANNEL_ID,
                     message_id=message_id,
                     protect_content=protect_content,
+                    caption=caption,
+                    parse_mode="HTML" if caption else None,
                 )
                 effective_delay = delay
                 if delay == _COPY_DELAY:
@@ -124,4 +127,62 @@ async def safe_copy_from_storage(
                     "COPY ERROR | chat=%s | message=%s | error=%s",
                     chat_id, message_id, exc,
                 )
+                return None
+
+
+async def safe_copy_from_source(
+    bot,
+    chat_id,
+    source_chat_id,
+    message_id,
+    *,
+    protect_content=False,
+    max_retries=6,
+    delay=0.0,
+    caption=None,
+):
+    """Copy a FREE-upload message from its original private chat.
+
+    This avoids the storage channel entirely. The caller should only use this
+    for messages that were intentionally retained in the source chat.
+    """
+    try:
+        message_id = int(message_id)
+        source_chat_id = int(source_chat_id)
+        chat_key = int(chat_id)
+    except (TypeError, ValueError):
+        return None
+    if chat_key in _BLOCKED_CHATS:
+        return None
+    retries = 0
+    async with _COPY_SEMAPHORE:
+        while True:
+            try:
+                result = await bot.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=source_chat_id,
+                    message_id=message_id,
+                    protect_content=protect_content,
+                    caption=caption,
+                    parse_mode="HTML" if caption else None,
+                )
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                return result
+            except TelegramRetryAfter as exc:
+                retries += 1
+                if retries > max_retries:
+                    return None
+                await asyncio.sleep(max(float(exc.retry_after), 1.0) + 0.5)
+            except TelegramForbiddenError:
+                _BLOCKED_CHATS.add(chat_key)
+                return None
+            except TelegramBadRequest as exc:
+                error = str(exc).lower()
+                if "chat not found" in error or "user is deactivated" in error or "bot was blocked" in error:
+                    _BLOCKED_CHATS.add(chat_key)
+                logger.warning("SOURCE COPY ERROR | source=%s message=%s error=%s", source_chat_id, message_id, exc)
+                return None
+            except Exception:
+                logger.exception("SOURCE COPY ERROR | source=%s message=%s", source_chat_id, message_id)
                 return None

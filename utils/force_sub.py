@@ -10,7 +10,7 @@ CHANNELS = [
     },
     {
         "id": -1003971846572,
-        "name": "Saluran notification",
+        "name": "Saluran Notification",
         "url": "https://t.me/noticsaluran",
     },
 ]

@@ -324,7 +324,7 @@ LANGUAGES = {
 def translate(lang: str, key: str, **kwargs):
 
     if lang not in LANGUAGES:
-        lang = "en"
+        lang = "id"
 
     text = LANGUAGES[lang].get(
         key,
@@ -335,3 +335,18 @@ def translate(lang: str, key: str, **kwargs):
         text = text.format(**kwargs)
 
     return text
+
+
+def media_watermark(lang: str, media_code: str, bot_name: str, position: int, total: int) -> str:
+    """Caption attached directly to each delivered media item."""
+    if lang == "en":
+        return (f"🔑 <b>{media_code}</b>\n"
+                f"🤖 <b>{bot_name}</b>\n"
+                f"📦 <b>Media {position}/{total}</b>")
+    if lang == "zh":
+        return (f"🔑 <b>{media_code}</b>\n"
+                f"🤖 <b>{bot_name}</b>\n"
+                f"📦 <b>媒体 {position}/{total}</b>")
+    return (f"🔑 <b>{media_code}</b>\n"
+            f"🤖 <b>{bot_name}</b>\n"
+            f"📦 <b>Media {position}/{total}</b>")
