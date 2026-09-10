@@ -135,13 +135,30 @@ async def _handle(request: Request):
 
     purchase = await fetchrow(
         """
-        SELECT *
-        FROM file_purchases
-        WHERE payment_id=$1
-        LIMIT 1
-        """,
-        order_id,
-    )
+        SELECT * FROM file_purchases WHERE payment_id=$1 LIMIT 1
+        """, order_id)
+
+    # Point purchase uses the same Cashi webhook. It is settled atomically
+    # and independently from file_purchases.
+    if not purchase:
+        point_order = await fetchrow("SELECT * FROM point_orders WHERE order_id=$1 LIMIT 1", order_id)
+        if point_order:
+            provider_amount_raw = event_data.get("amount")
+            if provider_amount_raw is not None:
+                try:
+                    provider_amount = int(float(provider_amount_raw))
+                except (TypeError, ValueError):
+                    return PlainTextResponse("Invalid amount", status_code=400)
+                if provider_amount < int(point_order.get("amount") or 0):
+                    logger.error("CASHI POINT AMOUNT MISMATCH order=%s local=%s provider=%s",order_id,point_order.get("amount"),provider_amount)
+                    return PlainTextResponse("Amount mismatch", status_code=400)
+            try:
+                from handlers.points import settle
+                ok = await settle(order_id)
+                return PlainTextResponse("OK" if ok else "Processing failed", status_code=200 if ok else 500)
+            except Exception:
+                logger.exception("CASHI POINT SETTLEMENT ERROR order=%s", order_id)
+                return PlainTextResponse("Processing failed", status_code=500)
 
     if not purchase:
         logger.warning(

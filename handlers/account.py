@@ -948,6 +948,10 @@ async def change_language(
                     text="🇬🇧 English",
                     callback_data="lang:en",
                 ),
+                InlineKeyboardButton(
+                    text="🇨🇳 中文",
+                    callback_data="lang:zh",
+                ),
             ],
             [
                 InlineKeyboardButton(
@@ -960,6 +964,6 @@ async def change_language(
 
     await safe_edit(
         call.message,
-        "🌐 <b>Pilih Bahasa / Choose Language</b>",
+        "🌐 <b>Pilih Bahasa / Choose Language / 选择语言</b>",
         reply_markup=kb,
     )

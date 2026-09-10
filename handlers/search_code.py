@@ -100,6 +100,11 @@ async def search_result(message: Message, state: FSMContext):
             f"💰 {harga}\n"
             f"👁 {row['view_count']}x\n\n"
         )
+        kb.button(
+            text=f"📂 Buka {row['code']}",
+            callback_data=f"open_code:{row['code']}"
+        )
+
 
 
     kb = InlineKeyboardBuilder()

@@ -1,7 +1,8 @@
 """Automatic BayarGG QR payment for file purchases.
 Uses the existing file_purchases/finish_payment flow and the signed webhook.
 """
-import io, logging, qrcode, secrets
+import io, logging, qrcode, secrets, base64, binascii
+from datetime import datetime
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from database import fetchrow, execute
@@ -11,6 +12,43 @@ from config import BAYARGG_ENABLED, BAYARGG_WEBHOOK_URL, BOT_URL
 
 logger=logging.getLogger(__name__)
 router=Router()
+
+
+def _parse_expires(value):
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        logger.warning("BAYARGG EXPIRES PARSE FAILED: %r", value)
+        return None
+
+
+def _qr_bytes(value):
+    if not value:
+        return None
+    value = str(value).strip()
+    if value.startswith("data:image/"):
+        try:
+            _, encoded = value.split(",", 1)
+            data = base64.b64decode(encoded, validate=True)
+            return data or None
+        except (ValueError, binascii.Error):
+            logger.exception("BAYARGG DATA QR INVALID")
+            return None
+    try:
+        img = qrcode.make(value)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        logger.exception("BAYARGG QR RENDER ERROR")
+        return None
 
 def kb(purchase_id:int):
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -24,14 +62,18 @@ async def create_bayargg(call:CallbackQuery, code:str, file):
     uid=int(call.from_user.id); price=int(file.get("price") or 0)
     if price<=0: return await call.message.answer("❌ Harga file tidak valid.")
     paid=await get_paid_purchase(uid,code)
-    if paid: return await call.message.answer("✅ Kamu sudah membeli file ini.")
+    if paid:
+        from handlers.getfile import process_code
+        return await process_code(call.message, code, paid_override=True)
     existing=await get_active_method_purchase(uid,code,"BAYARGG-")
     if existing:
         return await call.message.answer("⏳ Transaksi BayarGG masih aktif. Tekan cek pembayaran.", reply_markup=kb(existing["id"]))
     result=await get_or_create_purchase(uid,code,file,payment_prefix="BAYARGG-")
     if not result: return await call.message.answer("❌ Gagal membuat transaksi.")
     purchase=result["purchase"]
-    if result.get("already_paid"): return await call.message.answer("✅ Kamu sudah membeli file ini.")
+    if result.get("already_paid"):
+        from handlers.getfile import process_code
+        return await process_code(call.message, code, paid_override=True)
     if result.get("existing"):
         if purchase_method(purchase)=="bayargg":
             return await call.message.answer("⏳ Transaksi BayarGG masih aktif.",reply_markup=kb(purchase["id"]))
@@ -53,15 +95,25 @@ async def create_bayargg(call:CallbackQuery, code:str, file):
         await execute("UPDATE file_purchases SET status='failed' WHERE id=$1 AND status='pending'",purchase["id"])
         return await call.message.answer("❌ Gagal membuat QR BayarGG. Silakan pilih QR otomatis lainnya.")
     invoice=str(data["invoice_id"])
-    qr=str(data.get("qris_string") or "")
-    expires=data.get("expires_at")
+    qr=str(
+        data.get("qris_string")
+        or data.get("qris")
+        or data.get("qr_string")
+        or data.get("qr")
+        or data.get("qrUrl")
+        or data.get("qr_url")
+        or ""
+    ).strip()
+    expires=_parse_expires(data.get("expires_at"))
     saved=await fetchrow("""UPDATE file_purchases SET payment_id=$1,qr_string=$2,payment_url=$3,expires_at=$4 WHERE id=$5 AND status='pending' RETURNING *""",
                          invoice,qr,data.get("payment_url"),expires,purchase["id"])
     if not saved: return await call.message.answer("❌ Transaksi berubah saat diproses.")
     try:
-        img=qrcode.make(qr); buf=io.BytesIO(); img.save(buf,format="PNG"); buf.seek(0)
+        qr_data = _qr_bytes(qr)
+        if not qr_data:
+            raise ValueError("QR BayarGG kosong atau tidak valid")
         msg=await call.message.answer_photo(
-            BufferedInputFile(buf.getvalue(),"bayargg_qris.png"),
+            BufferedInputFile(qr_data,"bayargg_qris.png"),
             caption=("⚡ <b>QR OTOMATIS 2 • BAYARGG</b>\n\n"
                      f"📄 <b>{clean_html(file.get('title'))}</b>\n"
                      f"🔑 <code>{clean_html(code)}</code>\n"
@@ -73,7 +125,7 @@ async def create_bayargg(call:CallbackQuery, code:str, file):
         logger.exception("BAYARGG QR SEND ERROR")
         return await call.message.answer("⚠️ Pembayaran dibuat, tetapi QR gagal ditampilkan. Gunakan cek pembayaran.")
 
-@router.callback_query(F.data.startswith("bayargg:"))
+# INTERNAL: routed centrally by handlers.pay
 async def bayargg_entry(call:CallbackQuery):
     await call.answer("⏳ Membuat QR BayarGG...")
     code=call.data.split(":",1)[1].strip()
@@ -81,7 +133,7 @@ async def bayargg_entry(call:CallbackQuery):
     if not file: return await call.message.answer("❌ File tidak ditemukan.")
     return await create_bayargg(call,code,file)
 
-@router.callback_query(F.data.startswith("bayarggcheck:"))
+# INTERNAL: routed centrally by handlers.pay
 async def bayargg_check(call:CallbackQuery):
     await call.answer("⏳ Mengecek BayarGG...")
     pid=int(call.data.split(":",1)[1])

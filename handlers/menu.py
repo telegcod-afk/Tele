@@ -120,9 +120,9 @@ async def share_code_menu(callback: CallbackQuery):
     )])
     await callback.message.edit_text(
         "📤 <b>SHARE CODE</b>\n\n"
-        + ("Bagikan code agar progres unlock bertambah saat member baru membuka bot."
+        + ("Bagikan code. Kamu mendapat +1 poin ketika pengguna lain benar-benar membuka code tersebut."
            if lang == "id" else
-           "Share a code to build unlock progress when new members open the bot."),
+           "Share a code. You get +1 point when another user actually opens the code."),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
     )

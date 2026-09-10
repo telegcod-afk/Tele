@@ -75,9 +75,13 @@ async def check_sub_callback(call: CallbackQuery):
             "❌ <b>CHANNEL JOIN REQUIRED</b>\n\n"
             f"Channels you have not joined:\n{names}\n\n"
             "Join them and press <b>✅ I Joined</b>."
+            if lang == "en" else
+            "❌ <b>需要加入频道</b>\n\n"
+            f"尚未加入的频道：\n{names}\n\n"
+            "请加入后点击 <b>✅ 我已加入</b>。"
         )
         await call.answer(
-            "❌ Masih ada channel yang belum diikuti." if lang == "id" else "❌ Some required channels are still missing.",
+            "❌ Masih ada channel yang belum diikuti." if lang == "id" else "❌ Some required channels are still missing." if lang == "en" else "❌ 仍有必需频道未加入。",
             show_alert=True
         )
         try:

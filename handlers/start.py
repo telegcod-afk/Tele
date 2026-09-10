@@ -151,49 +151,24 @@ async def process_start(
 
     # =====================================================
     # CODE SHARE DEEP-LINK
-    # s_<code>_<sharer_id>
-    # Award one point only for a genuinely new bot member.
-    # This is done before language/force-sub screens so the event
-    # cannot be lost during the onboarding flow.
+    # Format: s_<owner_id>_<code>. Sharing itself never awards points.
+    # The +1 is recorded only when the shared code is actually opened.
     # =====================================================
-    if is_new_user and start_arg.startswith("s_"):
+    pending_share_owner = None
+    pending_share_code = None
+    if start_arg.startswith("s_"):
         try:
-            payload_parts = start_arg.split("_", 2)
-            if len(payload_parts) == 3:
-                shared_code = payload_parts[1].strip().lower()
-                sharer_id = int(payload_parts[2])
-                shared_file = await pool.fetchrow(
-                    """
-                    SELECT code, owner_id, media_count, is_paid
-                    FROM files
-                    WHERE LOWER(TRIM(code))=LOWER(TRIM($1))
-                    LIMIT 1
-                    """,
-                    shared_code,
-                )
-                if shared_file and int(shared_file["owner_id"] or 0) == sharer_id:
-                    awarded = await record_new_member_open(
-                        pool,
-                        shared_file["code"],
-                        sharer_id,
-                        user_id,
-                        media_count=int(shared_file["media_count"] or 0),
-                        is_paid=bool(shared_file["is_paid"]),
-                    )
-                    if awarded:
-                        logging.info(
-                            "CODE SHARE PROGRESS +1 | code=%s | owner=%s | new_member=%s",
-                            shared_file["code"], sharer_id, user_id,
-                        )
-                    # Continue onboarding and then open the shared code.
-                    start_arg = shared_file["code"]
-                    if state is not None:
-                        await state.update_data(start_payload=start_arg)
+            parts = start_arg.split("_", 2)
+            if len(parts)==3 and parts[1].isdigit():
+                pending_share_owner=int(parts[1]); pending_share_code=parts[2].strip()
+                shared_file=await pool.fetchrow("SELECT code,owner_id FROM files WHERE LOWER(TRIM(code))=LOWER(TRIM($1)) LIMIT 1",pending_share_code)
+                if shared_file and int(shared_file["owner_id"] or 0)==pending_share_owner:
+                    start_arg=shared_file["code"]
+                    if state is not None: await state.update_data(start_payload=start_arg)
+                else:
+                    pending_share_owner=None; pending_share_code=None
         except Exception:
-            logging.exception(
-                "CODE SHARE DEEP LINK ERROR | user=%s | payload=%s",
-                user_id, start_arg,
-            )
+            logging.exception("SHARE DEEPLINK PARSE ERROR | user=%s | payload=%s",user_id,start_arg)
 
     # Language is selected once; /start reuses the saved language.
     # The selector is shown only when no language has been saved (or when explicitly forced).
@@ -206,11 +181,12 @@ async def process_start(
             [
                 InlineKeyboardButton(text="🇮🇩 Indonesia", callback_data="lang:id"),
                 InlineKeyboardButton(text="🇬🇧 English", callback_data="lang:en"),
+                InlineKeyboardButton(text="🇨🇳 中文", callback_data="lang:zh"),
             ]
         ])
         await loading.edit_text(
-            "🌐 <b>Pilih Bahasa / Choose Language</b>\n\n"
-            "🇮🇩 Pilih Bahasa Indonesia\n🇬🇧 Choose English",
+            "🌐 <b>Pilih Bahasa / Choose Language / 选择语言</b>\n\n"
+            "🇮🇩 Indonesia\n🇬🇧 English\n🇨🇳 中文",
             parse_mode="HTML", reply_markup=kb
         )
         return
@@ -250,7 +226,13 @@ async def process_start(
         lang = current_lang or "id"
         missing = await get_missing_channels(bot, user_id)
         names = "\n".join(f"• <b>{x['name']}</b>" for x in missing)
-        text = ("❌ <b>WAJIB JOIN CHANNEL</b>\n\nSilakan join channel yang belum kamu ikuti:\n" + names + "\n\nSetelah itu tekan <b>✅ Saya Sudah Join</b>.") if lang == "id" else ("❌ <b>CHANNEL JOIN REQUIRED</b>\n\nPlease join the channel(s) you have not joined:\n" + names + "\n\nThen press <b>✅ I Joined</b>.")
+        text = (
+            "❌ <b>WAJIB JOIN CHANNEL</b>\n\nSilakan join channel yang belum kamu ikuti:\n" + names + "\n\nSetelah itu tekan <b>✅ Saya Sudah Join</b>."
+            if lang == "id" else
+            "❌ <b>CHANNEL JOIN REQUIRED</b>\n\nPlease join the channel(s) you have not joined:\n" + names + "\n\nThen press <b>✅ I Joined</b>."
+            if lang == "en" else
+            "❌ <b>需要加入频道</b>\n\n请加入尚未加入的频道：\n" + names + "\n\n完成后点击 <b>✅ 我已加入</b>。"
+        )
         await loading.edit_text(
             text,
             reply_markup=join_kb(bot_username, user_id, lang),
@@ -406,13 +388,96 @@ async def process_start(
         except Exception:
             pass
 
-        # Import setelah diperlukan
+        # Import setelah diperlukan.
+        # IMPORTANT: reward is granted only AFTER the code is actually
+        # opened through the canonical Get File flow.
         from handlers.getfile import process_code
+        result = await process_code(message, code)
 
-        return await process_code(
-            message,
-            code
-        )
+        if pending_share_owner and pending_share_code:
+            try:
+                shared_file = await pool.fetchrow(
+                    "SELECT code, owner_id, is_paid FROM files "
+                    "WHERE LOWER(TRIM(code))=LOWER(TRIM($1)) LIMIT 1",
+                    pending_share_code,
+                )
+                # A share-open reward is for a real free-code open. Paid
+                # codes are rewarded only through their normal purchase flow.
+                if (
+                    shared_file
+                    and not bool(shared_file["is_paid"])
+                    and int(shared_file["owner_id"] or 0) != user_id
+                ):
+                    media_count = await pool.fetchval(
+                        "SELECT COALESCE(media_count,0) FROM files WHERE code=$1",
+                        shared_file["code"],
+                    )
+                    opener_points = await pool.fetchval(
+                        "SELECT COALESCE(points,0) FROM users WHERE user_id=$1",
+                        user_id,
+                    )
+                    # Get File only opens a FREE code when the opener has
+                    # enough points for the entry gate. Reward only then.
+                    if float(opener_points or 0) >= int(media_count or 0):
+                        from utils.share_unlock import record_new_member_open
+                        awarded = await record_new_member_open(
+                            pool,
+                            shared_file["code"],
+                            pending_share_owner,
+                            user_id,
+                        )
+                    else:
+                        awarded = False
+                    if awarded:
+                        owner_points = await pool.fetchval(
+                            "SELECT points FROM users WHERE user_id=$1",
+                            pending_share_owner,
+                        )
+                        owner_lang = await pool.fetchval(
+                            "SELECT language FROM users WHERE user_id=$1",
+                            pending_share_owner,
+                        ) or "id"
+                        notify = {
+                            "id": (
+                                "🎉 <b>+1 POIN</b>\n\n"
+                                f"Code <code>{shared_file['code']}</code> "
+                                "berhasil dibuka oleh 1 pengguna unik.\n"
+                                f"⭐ Poin kamu sekarang: <b>{owner_points}</b>"
+                            ),
+                            "en": (
+                                "🎉 <b>+1 POINT</b>\n\n"
+                                f"Code <code>{shared_file['code']}</code> "
+                                "was opened by 1 unique user.\n"
+                                f"⭐ Your points: <b>{owner_points}</b>"
+                            ),
+                            "zh": (
+                                "🎉 <b>+1 积分</b>\n\n"
+                                f"代码 <code>{shared_file['code']}</code> "
+                                "已被 1 位独立用户打开。\n"
+                                f"⭐ 当前积分：<b>{owner_points}</b>"
+                            ),
+                        }.get(owner_lang, None)
+                        if notify:
+                            try:
+                                await bot.send_message(
+                                    pending_share_owner,
+                                    notify,
+                                    parse_mode="HTML",
+                                )
+                            except Exception:
+                                logging.exception(
+                                    "SHARE OWNER NOTIFY ERROR | owner=%s",
+                                    pending_share_owner,
+                                )
+            except Exception:
+                logging.exception(
+                    "SHARE POINT AWARD ERROR | owner=%s code=%s opener=%s",
+                    pending_share_owner,
+                    pending_share_code,
+                    user_id,
+                )
+
+        return result
 
     # =====================================================
     # HOME
@@ -424,6 +489,7 @@ async def process_start(
             username,
             fullname,
             balance,
+            points,
             total_referral,
             is_creator,
             creator_status
@@ -498,6 +564,7 @@ async def render_home_fast(
         """
         SELECT
             balance,
+            points,
             total_referral,
             is_creator,
             creator_status,
@@ -516,6 +583,8 @@ async def render_home_fast(
             user["balance"] or 0
         )
 
+        points = user["points"] or 0
+
         referral = (
             user["total_referral"] or 0
         )
@@ -527,6 +596,7 @@ async def render_home_fast(
     else:
 
         balance = 0
+        points = 0
         referral = 0
         is_creator = False
 
@@ -562,27 +632,42 @@ async def render_home_fast(
 
     if lang == "en":
         text = (
-            "<b>✨ TELECOD ✨</b>\n\n"
-            f"ID: <code>{user_id}</code>\n"
-            f"🎨 Creator: <b>{'VERIFIED ✅' if is_creator else 'NOT VERIFIED 🔒'}</b>\n"
-            f"Balance: {balance_text}\n"
-            f"Referrals: <b>{referral}</b>\n"
+            "<b>✨ MARKET DASHBOARD ✨</b>\n\n"
+            f"🆔 ID : <code>{user_id}</code>\n\n"
+            f"🎨 Status : <b>{'VERIFIED ✅' if is_creator else 'NOT VERIFIED 🔒'}</b>\n\n"
+            f"💰 Balance : {balance_text}\n\n"
+            f"⭐ Points : <b>{points}</b>\n\n"
+            f"👥 Referral : <b>{referral}</b>\n"
             "━━━━━━━━━━━━━━\n"
-            "🔗 Referral Link:\n"
+            "🔗 Referral Link :\n"
             f"<code>{ref_link}</code>\n\n"
-            "Use the menu below to upload, buy, sell and manage your Telegram code."
+            "Use the menu below to manage your files and account."
+        )
+    elif lang == "zh":
+        text = (
+            "<b>✨ 市场控制面板 ✨</b>\n\n"
+            f"🆔 ID：<code>{user_id}</code>\n\n"
+            f"🎨 状态：<b>{'已认证 ✅' if is_creator else '未认证 🔒'}</b>\n\n"
+            f"💰 余额：{balance_text}\n\n"
+            f"⭐ 积分：<b>{points}</b>\n\n"
+            f"👥 推荐：<b>{referral}</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "🔗 推荐链接：\n"
+            f"<code>{ref_link}</code>\n\n"
+            "使用下方菜单管理文件和账户。"
         )
     else:
         text = (
-            "<b>✨ TELECOD ✨</b>\n\n"
-            f"ID : <code>{user_id}</code>\n"
-            f"{creator_text}\n"
-            f"Saldo : {balance_text}\n"
-            f"Referral : <b>{referral}</b>\n"
+            "<b>✨ MARKET DASHBOARD ✨</b>\n\n"
+            f"🆔 ID : <code>{user_id}</code>\n\n"
+            f"🎨 Status : <b>{'TERVERIFIKASI ✅' if is_creator else 'BELUM TERVERIFIKASI 🔒'}</b>\n\n"
+            f"💰 Saldo : {balance_text}\n\n"
+            f"⭐ Poin : <b>{points}</b>\n\n"
+            f"👥 Referral : <b>{referral}</b>\n"
             "━━━━━━━━━━━━━━\n"
             "🔗 Link Referral :\n"
             f"<code>{ref_link}</code>\n\n"
-            "Gunakan menu di bawah untuk upload, jual, beli, dan mengelola code Telegram."
+            "Gunakan menu di bawah untuk mengelola file dan akun."
         )
 
     # =====================================================
@@ -734,12 +819,12 @@ async def back_home(
 @router.callback_query(F.data.startswith("lang:"))
 async def choose_language(call: CallbackQuery, state: FSMContext):
     lang = call.data.split(":", 1)[1]
-    if lang not in ("id", "en"):
+    if lang not in ("id", "en", "zh"):
         return await call.answer("Invalid language.", show_alert=True)
     pool = await get_pool()
     await pool.execute("UPDATE users SET language=$1 WHERE user_id=$2", lang, call.from_user.id)
     try:
-        await call.answer("Bahasa disimpan." if lang == "id" else "Language saved.")
+        await call.answer({"id": "Bahasa disimpan.", "en": "Language saved.", "zh": "语言已保存。"}.get(lang, "Bahasa disimpan."))
     except Exception:
         pass
 

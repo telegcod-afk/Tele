@@ -1,7 +1,7 @@
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database import get_pool
-from utils.share_unlock import get_share_status, ensure_share_progress
+from utils.points import get_points, fmt_points
 
 router = Router()
 
@@ -21,7 +21,7 @@ async def free_codes(call: CallbackQuery):
             COALESCE(f.media_count,0) AS media_count,
             COALESCE(f.is_paid,FALSE) AS is_paid
         FROM files f
-        WHERE f.status='published'
+        WHERE COALESCE(f.is_paid,FALSE)=FALSE
         ORDER BY f.created_at DESC
         LIMIT 30
         """
@@ -29,37 +29,24 @@ async def free_codes(call: CallbackQuery):
 
     if lang == "en":
         text = (
-            "🎁 <b>SHARE UNLOCK</b>\n"
+            "⭐ <b>FREE CODE • POINTS</b>\n"
             "━━━━━━━━━━━━━━━━━━\n\n"
-            "Share a code. Progress increases only when a genuinely new member "
-            "opens the bot from your code share link.\n\n"
+            "Free code requires points based on media count. Sharing is optional; the owner earns +1 point when another unique user actually opens the code.\n\n"
         )
     else:
         text = (
-            "🎁 <b>SHARE UNLOCK</b>\n"
+            "⭐ <b>FREE CODE • POINTS</b>\n"
             "━━━━━━━━━━━━━━━━━━\n\n"
-            "Bagikan code. Progress hanya bertambah jika member baru benar-benar "
-            "membuka bot melalui link share code.\n\n"
+            "Free code membutuhkan poin sesuai jumlah media. Share hanya untuk mendapatkan +1 poin saat user unik benar-benar membuka code.\n\n"
         )
 
     buttons = []
     for row in rows:
-        current, target, completed = await get_share_status(
-            pool, row["code"], call.from_user.id,
-            is_paid=bool(row["is_paid"]),
-            media_count=int(row["media_count"] or 0),
-        )
-        if completed:
-            status = f"🎉 {target}/{target}"
-        else:
-            status = f"📈 {current}/{target}"
+        points = await get_points(pool, call.from_user.id)
+        required = int(row["media_count"] or 0)
+        status = f"⭐ {fmt_points(points)}/{required}"
         label = str(row["title"])[:22]
-        buttons.append([
-            InlineKeyboardButton(
-                text=f"🎁 {label} • {status}",
-                callback_data=f"freeopen:{row['code']}"
-            )
-        ])
+        buttons.append([InlineKeyboardButton(text=f"📦 {label} • {status}", callback_data=f"open_code:{row['code']}")])
 
     if not buttons:
         text += "📭 Belum ada code published."

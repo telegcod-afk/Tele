@@ -197,7 +197,7 @@ async def marketplace_menu(call: CallbackQuery):
 
             kb.button(
                 text=f"📦 {title[:25]}",
-                callback_data=f"market:{f['code']}"
+                callback_data=f"open_code:{f['code']}"
             )
 
     # ===============================

@@ -171,9 +171,7 @@ async def cancel_cashi_database(
 # ============================================================
 # CREATE CASHI PAYMENT
 # ============================================================
-@router.callback_query(
-    F.data.startswith("cashi:")
-)
+# INTERNAL: routed centrally by handlers.pay
 async def create_cashi(
     call: CallbackQuery,
 ):
@@ -622,7 +620,10 @@ async def create_cashi(
                     qr_image,
                     payment_url,
                     expires_at,
-                    created_at
+                    created_at,
+                    provider,
+                    payment_method,
+                    code
                 )
                 VALUES
                 (
@@ -636,9 +637,11 @@ async def create_cashi(
                     $7,
                     $8,
                     $9,
-                    NOW()
+                    NOW(),
+                    'CASHI',
+                    'qris',
+                    $2
                 )
-                ON CONFLICT (user_id, file_code) DO NOTHING
                 RETURNING *
                 """,
                 user_id,
@@ -781,9 +784,7 @@ async def create_cashi(
 # ============================================================
 # CHECK CASHI PAYMENT
 # ============================================================
-@router.callback_query(
-    F.data.startswith("cashicheck:")
-)
+# INTERNAL: routed centrally by handlers.pay
 async def check_cashi(
     call: CallbackQuery,
 ):
