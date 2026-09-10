@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT,
     fullname TEXT,
     full_name TEXT,
-    language TEXT DEFAULT 'id' CHECK (language IN ('id','en')),
+    language TEXT DEFAULT 'id' CHECK (language IN ('id','en','zh')),
     balance BIGINT NOT NULL DEFAULT 0 CHECK (balance >= 0),
     total_earn BIGINT NOT NULL DEFAULT 0,
     total_referral BIGINT NOT NULL DEFAULT 0,
@@ -92,7 +92,26 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
 UPDATE users SET chat_id = user_id WHERE chat_id IS NULL;
 UPDATE users SET full_name = COALESCE(full_name, fullname) WHERE full_name IS NULL;
 UPDATE users SET fullname = COALESCE(fullname, full_name) WHERE fullname IS NULL;
-UPDATE users SET language = 'id' WHERE language IS NULL OR language NOT IN ('id','en');
+DO $$
+DECLARE c RECORD;
+BEGIN
+    IF to_regclass('public.users') IS NOT NULL THEN
+        FOR c IN
+            SELECT conname
+            FROM pg_constraint
+            WHERE conrelid = 'public.users'::regclass
+              AND contype = 'c'
+              AND pg_get_constraintdef(oid) ILIKE '%language%'
+        LOOP
+            EXECUTE format('ALTER TABLE public.users DROP CONSTRAINT IF EXISTS %I', c.conname);
+        END LOOP;
+        ALTER TABLE public.users
+            ADD CONSTRAINT users_language_check
+            CHECK (language IN ('id','en','zh'));
+    END IF;
+END $$;
+
+UPDATE users SET language = 'id' WHERE language IS NULL OR language NOT IN ('id','en','zh');
 UPDATE users SET balance = 0 WHERE balance IS NULL OR balance < 0;
 
 CREATE INDEX IF NOT EXISTS idx_users_creator ON users(is_creator, creator_status);
@@ -109,7 +128,16 @@ CREATE TABLE IF NOT EXISTS settings (
 INSERT INTO settings(key,value) VALUES
 ('maintenance','off'),
 ('maintenance_text','Maintenance sedang berlangsung. Silakan coba lagi nanti.'),
-('withdraw_enabled','on')
+('withdraw_enabled','on'),
+('payment_cashi_enabled','on'),
+('payment_bayargg_enabled','on'),
+('payment_manual_enabled','on'),
+('payment_binance_enabled','off'),
+('manual_qr_chat_id',''),
+('manual_qr_message_id',''),
+('manual_qr_file_id',''),
+('binance_usdt_address',''),
+('binance_account','')
 ON CONFLICT(key) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS admins (
@@ -193,6 +221,7 @@ CREATE TABLE IF NOT EXISTS medias (
     id BIGSERIAL PRIMARY KEY,
     code TEXT NOT NULL,
     message_id BIGINT,
+    source_chat_id BIGINT,
     file_id TEXT,
     file_type TEXT,
     file_size BIGINT DEFAULT 0,
@@ -202,6 +231,7 @@ CREATE TABLE IF NOT EXISTS medias (
 );
 ALTER TABLE medias ADD COLUMN IF NOT EXISTS code TEXT;
 ALTER TABLE medias ADD COLUMN IF NOT EXISTS message_id BIGINT;
+ALTER TABLE medias ADD COLUMN IF NOT EXISTS source_chat_id BIGINT;
 ALTER TABLE medias ADD COLUMN IF NOT EXISTS file_id TEXT;
 ALTER TABLE medias ADD COLUMN IF NOT EXISTS file_type TEXT;
 ALTER TABLE medias ADD COLUMN IF NOT EXISTS file_size BIGINT DEFAULT 0;
@@ -210,6 +240,7 @@ ALTER TABLE medias ADD COLUMN IF NOT EXISTS position INT DEFAULT 0;
 ALTER TABLE medias ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
 CREATE INDEX IF NOT EXISTS idx_medias_code ON medias(code);
 CREATE INDEX IF NOT EXISTS idx_medias_message ON medias(message_id);
+CREATE INDEX IF NOT EXISTS idx_medias_source_chat ON medias(source_chat_id);
 
 -- -------------------------
 -- PURCHASES / PAYMENTS
@@ -248,6 +279,7 @@ ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS qr_chat_id BIGINT;
 ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP;
 ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
 ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS media_session_id TEXT;
+ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS gateway_order_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_file_purchases_user ON file_purchases(user_id);
 CREATE INDEX IF NOT EXISTS idx_file_purchases_code ON file_purchases(file_code);
 CREATE INDEX IF NOT EXISTS idx_file_purchases_status ON file_purchases(status);
@@ -571,6 +603,96 @@ CREATE INDEX IF NOT EXISTS idx_file_reactions_code ON file_user_reactions(file_c
 CREATE INDEX IF NOT EXISTS idx_file_favorites_user ON file_user_favorites(user_id);
 CREATE INDEX IF NOT EXISTS idx_file_ratings_code ON file_user_ratings(file_code);
 
+
+-- -------------------------
+-- AUXILIARY TABLES USED BY BOT HANDLERS
+-- -------------------------
+CREATE TABLE IF NOT EXISTS code_share_progress (
+    id BIGSERIAL PRIMARY KEY,
+    code TEXT NOT NULL,
+    user_id BIGINT NOT NULL,
+    target INT NOT NULL DEFAULT 1,
+    progress INT NOT NULL DEFAULT 0,
+    is_paid BOOLEAN NOT NULL DEFAULT FALSE,
+    completed BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(code,user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_code_share_progress_user ON code_share_progress(user_id);
+CREATE INDEX IF NOT EXISTS idx_code_share_progress_code ON code_share_progress(code);
+
+CREATE TABLE IF NOT EXISTS code_share_events (
+    id BIGSERIAL PRIMARY KEY,
+    code TEXT NOT NULL,
+    owner_id BIGINT NOT NULL,
+    new_member_id BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(code,owner_id,new_member_id)
+);
+
+CREATE TABLE IF NOT EXISTS creator_upgrade_payments (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    amount BIGINT NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    admin_id BIGINT,
+    payment_id TEXT,
+    provider TEXT,
+    provider_invoice TEXT,
+    qr_string TEXT,
+    qr_image TEXT,
+    payment_url TEXT,
+    expires_at TIMESTAMPTZ,
+    paid_at TIMESTAMPTZ,
+    reviewed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_creator_upgrade_user ON creator_upgrade_payments(user_id);
+CREATE INDEX IF NOT EXISTS idx_creator_upgrade_status ON creator_upgrade_payments(status);
+
+CREATE TABLE IF NOT EXISTS premium_payments (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    package_id TEXT NOT NULL,
+    amount BIGINT NOT NULL DEFAULT 0,
+    payment_id TEXT UNIQUE NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    qr_string TEXT,
+    payment_url TEXT,
+    expires_at TIMESTAMPTZ,
+    access_until TIMESTAMPTZ,
+    code_limit INT NOT NULL DEFAULT 0,
+    paid_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_premium_payments_user ON premium_payments(user_id);
+CREATE INDEX IF NOT EXISTS idx_premium_payments_status ON premium_payments(status);
+
+CREATE TABLE IF NOT EXISTS premium_code_usage (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    code TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id,code)
+);
+CREATE INDEX IF NOT EXISTS idx_premium_code_usage_user ON premium_code_usage(user_id);
+
+CREATE TABLE IF NOT EXISTS user_notifications (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'general',
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    read_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_user_notifications_user ON user_notifications(user_id,created_at DESC);
+
 -- Make each media independently addressable.
 CREATE TABLE IF NOT EXISTS media_codes (
     media_code TEXT PRIMARY KEY,
@@ -589,6 +711,9 @@ ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS provider_invoice TEXT;
 ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS payment_method TEXT;
 CREATE INDEX IF NOT EXISTS idx_file_purchases_provider_invoice
 ON file_purchases(provider,provider_invoice);
+
+-- Payment method settings are runtime-switchable from the admin panel.
+-- manual_qr_chat_id + manual_qr_message_id point to the QR message captured by /qrid.
 
 -- Telegram safety settings.
 INSERT INTO settings(key,value) VALUES
@@ -612,4 +737,134 @@ UPDATE files
 SET search_text = concat_ws(' ',coalesce(code,''),coalesce(title,''),coalesce(creator,''))
 WHERE search_text IS NULL OR search_text='';
 
+
+-- ============================================================
+-- POINT ECONOMY (REAL / ATOMIC)
+-- 1 point = Rp1.00 for purchases. Media delivery costs 1.20 points.
+-- Uploading FREE media does NOT consume points. Reward: 50 media = +10, 100 media = +20.
+-- ============================================================
+ALTER TABLE users ADD COLUMN IF NOT EXISTS points NUMERIC(18,2) NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS checkin_streak INT NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_checkin_date DATE;
+UPDATE users SET points=0 WHERE points IS NULL;
+ALTER TABLE users ALTER COLUMN points SET DEFAULT 0;
+ALTER TABLE users ALTER COLUMN points SET NOT NULL;
+
+CREATE TABLE IF NOT EXISTS point_transactions (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    amount NUMERIC(18,2) NOT NULL,
+    balance_after NUMERIC(18,2) NOT NULL,
+    type TEXT NOT NULL,
+    reference TEXT NOT NULL UNIQUE,
+    description TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_point_transactions_user ON point_transactions(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS point_checkins (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    checkin_date DATE NOT NULL,
+    day_number INT NOT NULL,
+    points NUMERIC(18,2) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id, checkin_date)
+);
+
+CREATE TABLE IF NOT EXISTS point_code_unlocks (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    amount NUMERIC(18,2) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id, code)
+);
+CREATE INDEX IF NOT EXISTS idx_point_code_unlocks_code ON point_code_unlocks(code);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_point_code_unlocks_user_code_lower ON point_code_unlocks(user_id, LOWER(code));
+
+CREATE TABLE IF NOT EXISTS point_orders (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    points NUMERIC(18,2) NOT NULL,
+    amount BIGINT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'cashi',
+    order_id TEXT UNIQUE NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    qr_url TEXT,
+    expires_at TIMESTAMPTZ,
+    paid_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_point_orders_user_status ON point_orders(user_id,status);
+CREATE INDEX IF NOT EXISTS idx_point_orders_order ON point_orders(order_id);
+
+-- ============================================================
+-- UPLOAD REWARD ECONOMY
+-- ============================================================
+-- Uploading does NOT consume points.
+-- Reward is granted only for completed blocks of 50 media:
+--   1-49  media = 0 points
+--   50-99 media = +10 points
+--   100 media = +20 points
+-- The application records the reward in point_transactions using
+-- a unique reference so retries cannot duplicate the reward.
+-- ============================================================
+
+-- Atomic point credit/debit helpers. Amount may be positive or negative.
+CREATE OR REPLACE FUNCTION public.add_points(
+    p_user_id BIGINT, p_amount NUMERIC, p_type TEXT, p_reference TEXT, p_description TEXT DEFAULT NULL
+) RETURNS NUMERIC AS $$
+DECLARE
+    v_balance NUMERIC(18,2);
+    v_existing NUMERIC(18,2);
+    v_inserted BIGINT;
+BEGIN
+    -- Serialize identical references so webhook/callback retries can never
+    -- credit or debit the same transaction twice.
+    PERFORM pg_advisory_xact_lock(hashtextextended(COALESCE(p_reference,''), 0));
+
+    SELECT balance_after INTO v_existing
+      FROM point_transactions
+     WHERE reference=p_reference
+     LIMIT 1;
+    IF FOUND THEN RETURN v_existing; END IF;
+
+    SELECT points INTO v_balance
+      FROM users
+     WHERE user_id=p_user_id
+     FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'user_not_found'; END IF;
+
+    IF p_amount < 0 THEN
+        IF v_balance + p_amount < 0 THEN
+            RAISE EXCEPTION 'insufficient_points';
+        END IF;
+    END IF;
+
+    UPDATE users
+       SET points = points + p_amount, updated_at=NOW()
+     WHERE user_id=p_user_id
+     RETURNING points INTO v_balance;
+
+    INSERT INTO point_transactions(user_id,amount,balance_after,type,reference,description)
+    VALUES(p_user_id,p_amount,v_balance,p_type,p_reference,p_description);
+
+    RETURN v_balance;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
 COMMIT;
+
+
+-- ============================================================
+-- PAYMENT COMPATIBILITY MIGRATION
+-- ============================================================
+-- Cashi/BayarGG QR transactions do not depend on a UNIQUE
+-- (user_id,file_code) constraint. Existing deployments only need the
+-- columns below so provider metadata can be stored safely.
+ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS gateway_order_id TEXT;
+ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS provider TEXT;
+ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS provider_invoice TEXT;
+ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS payment_method TEXT;

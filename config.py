@@ -255,7 +255,7 @@ GROUP_ID = env_int(
 
 NOTIF_CHANNEL_ID = env_int(
     "NOTIF_CHANNEL_ID",
-    -1004441808999,
+    -1004413314849,
 )
 
 

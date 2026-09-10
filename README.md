@@ -54,3 +54,7 @@ Project baru siap deploy untuk bot Telegram marketplace/media dengan:
 10. Test: `/start` → force join → dashboard → upload → get code → payment → open.
 
 Untuk tutorial langkah demi langkah, buka `docs/TUTORIAL_LENGKAP_ID.md`.
+
+
+## Loading UX
+Semua inline callback memakai middleware loading global. `/start` dan tombol reply-keyboard memakai message loading middleware. Lihat `LOADING_UX_FULL.md`.

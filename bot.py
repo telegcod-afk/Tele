@@ -7,6 +7,7 @@ from middlewares.ban import BanMiddleware
 from middlewares.maintenance import MaintenanceMiddleware
 from middlewares.ratelimit import RateLimitMiddleware
 from middlewares.loading import CallbackLoadingMiddleware
+from middlewares.message_loading import MessageLoadingMiddleware
 from utils.telegram_safe import install_telegram_edit_guards
 # Install before routers are imported so every direct aiogram edit call is protected.
 install_telegram_edit_guards()
@@ -42,6 +43,15 @@ async def telegram_error_handler(event):
 # ============================================================
 # MIDDLEWARE
 # ============================================================
+# IMPORTANT: loading is registered FIRST so Telegram receives the
+# callback ACK before maintenance/ban/rate-limit/database work.
+dp.callback_query.middleware(
+    CallbackLoadingMiddleware()
+)
+dp.message.middleware(
+    MessageLoadingMiddleware()
+)
+
 dp.message.middleware(
     BanMiddleware()
 )
@@ -57,10 +67,6 @@ dp.callback_query.middleware(
 # Conservative anti-spam guard
 dp.callback_query.middleware(
     RateLimitMiddleware()
-)
-# Immediate callback loading feedback
-dp.callback_query.middleware(
-    CallbackLoadingMiddleware()
 )
 # ============================================================
 # ROUTERS IMPORT
@@ -86,6 +92,7 @@ from handlers.new_code import router as new_code_router
 from handlers.category_code import router as category_router
 # ACCOUNT
 from handlers.account import router as account_router
+from handlers.points import router as points_router
 from handlers.vip import router as vip_router
 from handlers.my_code import router as my_code_router
 from handlers.help import router as help_router
@@ -96,6 +103,7 @@ from handlers.ewallet import router as ewallet_router
 # PAYMENT
 from handlers.pay import router as pay_router
 from handlers.cancel import router as cancel_router
+from handlers.qrid import router as qrid_router
 # CASHI PAYMENT
 from handlers.cashi import router as cashi_router
 from handlers.bayargg_payment import router as bayargg_payment_router
@@ -157,6 +165,7 @@ dp.include_router(new_code_router)
 # ACCOUNT
 # ------------------------------------------------------------
 dp.include_router(account_router)
+dp.include_router(points_router)
 # Account -> 💎 VIP -> callback_data="vvip"
 dp.include_router(vip_router)
 dp.include_router(my_code_router)
@@ -174,6 +183,7 @@ dp.include_router(pay_router)
 dp.include_router(cashi_router)
 dp.include_router(bayargg_payment_router)
 dp.include_router(cancel_router)
+dp.include_router(qrid_router)
 # ------------------------------------------------------------
 # WITHDRAW
 # ------------------------------------------------------------
