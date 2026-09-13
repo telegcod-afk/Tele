@@ -29,8 +29,6 @@ from keyboards.join import join_kb
 from utils.force_sub import check_force_sub
 from utils.share_unlock import telegram_setting, share_url
 from utils.user_lang import get_user_language
-from utils.telecod_code import build_code
-
 
 
 router = Router()
@@ -463,6 +461,37 @@ async def copy_to_storage(
 # =========================================================
 # GENERATE UNIQUE CODE
 # =========================================================
+
+async def generate_code(photo_count: int, video_count: int, document_count: int) -> str:
+    """Generate stable TeleCodRobot codes.
+
+    Format:
+        Telecodrobot_{P}p{V}v{D}d_{RANDOM11}
+
+    Example:
+        Telecodrobot_1p5v0d_x0y13z9y11x
+
+    Random characters are restricted to x/y/z and digits.
+    """
+    pool = await get_pool()
+    alphabet = "zyx0123456789"
+    photo_count = max(int(photo_count or 0), 0)
+    video_count = max(int(video_count or 0), 0)
+    document_count = max(int(document_count or 0), 0)
+
+    while True:
+        random_part = "".join(secrets.choice(alphabet) for _ in range(11))
+        code = (
+            f"Telecodrobot_{photo_count}p{video_count}v"
+            f"{document_count}d_{random_part}"
+        )
+        exists = await pool.fetchval(
+            "SELECT 1 FROM files WHERE LOWER(code)=LOWER($1) LIMIT 1",
+            code,
+        )
+        if not exists:
+            return code
+
 
 # =========================================================
 # FORMAT RUPIAH
@@ -2182,19 +2211,16 @@ async def finalize_save(
         )
 
         # =================================================
-        # GENERATE CODE
+        # MEDIA COUNTS + CODE
         # =================================================
 
+        media_count = len(media)
         photo_count = sum(1 for item in media if item.get("type") == "photo")
         video_count = sum(1 for item in media if item.get("type") == "video")
         document_count = sum(1 for item in media if item.get("type") == "document")
 
-        photo_count = sum(1 for item in media if str(item.get('type', '')).lower() == 'photo')
-        video_count = sum(1 for item in media if str(item.get('type', '')).lower() == 'video')
-        document_count = sum(1 for item in media if str(item.get('type', '')).lower() in ('document', 'doc'))
-        code = build_code(photo_count, video_count, document_count)
-
-        media_count = len(media)
+        # Example: Telecodrobot_1p5v0d_x0y13z9y11x
+        code = await generate_code(photo_count, video_count, document_count)
 
         # =================================================
         # PAID FILE -> MOVE FREE-COLLECTED MESSAGES TO STORAGE
@@ -2555,24 +2581,6 @@ async def finalize_save(
         # =================================================
         # MEDIA SUMMARY
         # =================================================
-
-        video_count = sum(
-            1
-            for item in media
-            if item.get("type") == "video"
-        )
-
-        photo_count = sum(
-            1
-            for item in media
-            if item.get("type") == "photo"
-        )
-
-        document_count = sum(
-            1
-            for item in media
-            if item.get("type") == "document"
-        )
 
         info = []
 

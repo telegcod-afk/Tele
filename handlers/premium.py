@@ -140,7 +140,7 @@ async def premium_buy(call: CallbackQuery):
     await call.answer("⏳ Membuat QR DompetX...")
     payment = await DompetX.create_payment(
         amount=package["price"],
-        description=f"PasTele {package['name']}",
+        description=f"TeleCodRobot {package['name']}",
         customer_name=call.from_user.full_name
     )
     if not payment:

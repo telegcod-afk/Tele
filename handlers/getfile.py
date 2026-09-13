@@ -25,8 +25,6 @@ from database import get_pool
 from utils.user import get_user_status
 from utils.user_lang import get_user_language
 from utils.language import translate
-from utils.telecod_code import TELECOD_CODE_SEARCH_RE, TELECOD_CODE_RE, normalize_code, extract_code
-
 
 
 router = Router()
@@ -40,6 +38,11 @@ logger = logging.getLogger(__name__)
 
 UPDATE_DELAY = 0.5
 
+CODE_PREFIX = "Telecodrobot_"
+CODE_REGEX = re.compile(
+    r"(?<![A-Za-z0-9])Telecodrobot_\d+p\d+v\d+d_[zyx0-9]{11}(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 
 
 # ============================================================
@@ -168,6 +171,29 @@ def safe_json(data):
 # ============================================================
 # CODE NORMALIZER
 # ============================================================
+
+CODE_REGEX = re.compile(
+    rf"(?<![A-Za-z0-9]){re.escape(CODE_PREFIX)}[A-Za-z0-9]{{{CODE_SUFFIX_LENGTH}}}(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def normalize_code(code: str) -> str:
+    """
+    Normalisasi code agar pencarian konsisten.
+    """
+
+    if not code:
+        return ""
+
+    return (
+        str(code)
+        .strip()
+        .replace(" ", "")
+        .replace("\n", "")
+        .replace("\r", "")
+    )
+
 
 # ============================================================
 # SAFE MESSAGE UPDATE
@@ -760,13 +786,13 @@ async def process_code(
 # ============================================================
 # A CODE can arrive from anywhere in the chat, not only after pressing
 # Get File. It always enters the same process_code() pipeline.
-@router.message(F.text.regexp(TELECOD_CODE_SEARCH_RE))
+@router.message(F.text.regexp(CODE_REGEX))
 async def receive_code_global(
     message: Message,
     state: FSMContext,
 ):
     user_id = int(message.from_user.id)
-    code_match = TELECOD_CODE_SEARCH_RE.search(message.text or "")
+    code_match = CODE_REGEX.search(message.text or "")
     if not code_match:
         return
     code = normalize_code(code_match.group())

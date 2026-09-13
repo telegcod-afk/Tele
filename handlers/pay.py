@@ -3249,54 +3249,17 @@ async def complete_success_side_effects(
             "SELLER PROFIT ERROR"
         )
     # ========================================================
-    # NOTIFICATION CHANNEL
+    # NOTIFICATION CHANNEL — BUY CODE
     # ========================================================
     try:
-        if NOTIF_CHANNEL_ID:
-            masked = mask_user_id(
-                user_id
-            )
-            buy_url = (
-                "https://t.me/mktplbot"
-                f"?start={code}"
-            )
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="🛒 Buy Now",
-                            url=buy_url,
-                        )
-                    ]
-                ]
-            )
-            payment_name = (
-                "CASHI"
-                if purchase_method(
-                    purchase
-                ) == "cashi"
-                else "MANUAL"
-            )
-            await bot.send_message(
-                NOTIF_CHANNEL_ID,
-                (
-                    "💸 <b>FILE PAYMENT SUCCESS</b>\n\n"
-                    f"📄 Judul: "
-                    f"<b>{clean_html(file.get('title'))}</b>\n"
-                    f"📁 Code: "
-                    f"<code>{clean_html(code)}</code>\n"
-                    f"👤 User: "
-                    f"<code>{masked}</code>\n"
-                    f"💰 Harga: "
-                    f"<b>{format_rupiah(purchase.get('paid_price'))}</b>"
-                ),
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
-    except Exception:
-        logger.exception(
-            "PAYMENT NOTIFICATION ERROR"
+        await send_payment_success_channel(
+            bot, "code", user_id, purchase.get("paid_price"),
+            purchase_method(purchase) or "manual",
+            file.get("title") or code, code,
         )
+    except Exception:
+        logger.exception("CODE PURCHASE CHANNEL NOTIFY ERROR")
+
     # ========================================================
     # DELETE PAYMENT QR
     # ========================================================

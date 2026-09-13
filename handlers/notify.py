@@ -1,7 +1,7 @@
 """Text notification / direct-code detection handler.
 
 Responsibilities:
-- Detect TeleCodbot codes sent as ordinary text.
+- Detect TeleCodRobotbot codes sent as ordinary text.
 - Open valid codes with an inline button.
 - Offer upload when the text is not a valid code.
 - Keep FSM handlers untouched.
@@ -33,19 +33,10 @@ router = Router()
 # CODE REGEX
 # =========================================================
 
-# TeleCodbot_ + exactly 14 alphanumeric characters.
 CODE_REGEX = re.compile(
-    r"(?<![A-Za-z0-9])TeleCodbot_[A-Za-z0-9]{14}(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])Telecodrobot_\d+p\d+v\d+d_[zyx0-9]{11}(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
-
-
-def normalize_code(code: str) -> str:
-    """Normalize a code safely for lookup."""
-    if not code:
-        return ""
-
-    return re.sub(r"\s+", "", code).strip()
 
 
 # =========================================================
@@ -513,7 +504,7 @@ async def notify_text(
         #
         # while $1 could still contain uppercase letters.
         #
-        # This caused valid TeleCodbot codes to return NOT FOUND.
+        # This caused valid TeleCodRobotbot codes to return NOT FOUND.
         pool = await get_pool()
 
         exists = await pool.fetchval(
