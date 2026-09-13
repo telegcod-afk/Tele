@@ -601,73 +601,49 @@ async def render_home_fast(
         is_creator = False
 
     # =====================================================
-    # STATUS KREATOR
+    # CLEAN MARKET DASHBOARD
     # =====================================================
-
-    if is_creator:
-
-        creator_text = (
-            "🎨 Kreator : "
-            "<b>TERVERIFIKASI ✅</b>"
-        )
-
-        balance_text = (
-            f"<b>Rp {balance:,.0f}</b>"
-        )
-
-    else:
-
-        creator_text = (
-            "👤 Kreator : "
-            "<b>BELUM TERVERIFIKASI 🔒</b>"
-        )
-
-        balance_text = (
-            "<b>🔒 SALDO TERKUNCI</b>"
-        )
-
-    # =====================================================
-    # HOME TEXT
-    # =====================================================
-
+    status = "TERVERIFIKASI ✅" if is_creator else "BELUM TERVERIFIKASI 🔒"
+    balance_text = f"Rp {int(balance):,}".replace(",", ".")
+    points_text = str(points)
     if lang == "en":
         text = (
-            "<b>✨ MARKET DASHBOARD ✨</b>\n\n"
-            f"🆔 ID : <code>{user_id}</code>\n\n"
-            f"🎨 Status : <b>{'VERIFIED ✅' if is_creator else 'NOT VERIFIED 🔒'}</b>\n\n"
-            f"💰 Balance : {balance_text}\n\n"
-            f"⭐ Points : <b>{points}</b>\n\n"
+            "<b>✨ MARKET DASHBOARD ✨</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            f"🆔 ID : <code>{user_id}</code>\n"
+            f"🎨 Status : <b>{'VERIFIED ✅' if is_creator else 'NOT VERIFIED 🔒'}</b>\n"
+            f"💰 Balance : <b>{balance_text}</b>\n"
+            f"⭐ Points : <b>{points_text}</b>\n"
             f"👥 Referral : <b>{referral}</b>\n"
             "━━━━━━━━━━━━━━\n"
             "🔗 Referral Link :\n"
-            f"<code>{ref_link}</code>\n\n"
-            "Use the menu below to manage your files and account."
+            f"<code>{ref_link}</code>"
         )
     elif lang == "zh":
         text = (
-            "<b>✨ 市场控制面板 ✨</b>\n\n"
-            f"🆔 ID：<code>{user_id}</code>\n\n"
-            f"🎨 状态：<b>{'已认证 ✅' if is_creator else '未认证 🔒'}</b>\n\n"
-            f"💰 余额：{balance_text}\n\n"
-            f"⭐ 积分：<b>{points}</b>\n\n"
+            "<b>✨ 市场控制面板 ✨</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            f"🆔 ID：<code>{user_id}</code>\n"
+            f"🎨 状态：<b>{'已认证 ✅' if is_creator else '未认证 🔒'}</b>\n"
+            f"💰 余额：<b>{balance_text}</b>\n"
+            f"⭐ 积分：<b>{points_text}</b>\n"
             f"👥 推荐：<b>{referral}</b>\n"
             "━━━━━━━━━━━━━━\n"
             "🔗 推荐链接：\n"
-            f"<code>{ref_link}</code>\n\n"
-            "使用下方菜单管理文件和账户。"
+            f"<code>{ref_link}</code>"
         )
     else:
         text = (
-            "<b>✨ MARKET DASHBOARD ✨</b>\n\n"
-            f"🆔 ID : <code>{user_id}</code>\n\n"
-            f"🎨 Status : <b>{'TERVERIFIKASI ✅' if is_creator else 'BELUM TERVERIFIKASI 🔒'}</b>\n\n"
-            f"💰 Saldo : {balance_text}\n\n"
-            f"⭐ Poin : <b>{points}</b>\n\n"
+            "<b>✨ MARKET DASHBOARD ✨</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            f"🆔 ID : <code>{user_id}</code>\n"
+            f"🎨 Status : <b>{status}</b>\n"
+            f"💰 Saldo : <b>{balance_text}</b>\n"
+            f"⭐ Poin : <b>{points_text}</b>\n"
             f"👥 Referral : <b>{referral}</b>\n"
             "━━━━━━━━━━━━━━\n"
             "🔗 Link Referral :\n"
-            f"<code>{ref_link}</code>\n\n"
-            "Gunakan menu di bawah untuk mengelola file dan akun."
+            f"<code>{ref_link}</code>"
         )
 
     # =====================================================

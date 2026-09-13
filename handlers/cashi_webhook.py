@@ -155,6 +155,19 @@ async def _handle(request: Request):
             try:
                 from handlers.points import settle
                 ok = await settle(order_id)
+                if ok:
+                    try:
+                        refreshed = await fetchrow("SELECT * FROM point_orders WHERE order_id=$1 LIMIT 1", order_id)
+                        if refreshed and str(refreshed.get("status") or "").lower() == "paid":
+                            from database import get_pool
+                            ppool = await get_pool()
+                            lang = await __import__("utils.user_lang", fromlist=["get_user_language"]).get_user_language(refreshed["user_id"])
+                            pts = await ppool.fetchval("SELECT points FROM users WHERE user_id=$1", refreshed["user_id"])
+                            text = {"id":f"🎉 <b>Pembelian poin berhasil!</b>\n\n⭐ +{refreshed['points']} poin\n⭐ Total: <b>{pts}</b>","en":f"🎉 <b>Point purchase successful!</b>\n\n⭐ +{refreshed['points']} points\n⭐ Total: <b>{pts}</b>","zh":f"🎉 <b>积分购买成功！</b>\n\n⭐ +{refreshed['points']} 积分\n⭐ 总计：<b>{pts}</b>"}[lang]
+                            await ppool.execute("INSERT INTO user_notifications(user_id,type,title,message) VALUES($1,'payment','Points Purchase',$2)", refreshed["user_id"], text)
+                            await bot.send_message(refreshed["user_id"], text, parse_mode="HTML")
+                    except Exception:
+                        logger.exception("CASHI POINT USER NOTIFY ERROR order=%s", order_id)
                 return PlainTextResponse("OK" if ok else "Processing failed", status_code=200 if ok else 500)
             except Exception:
                 logger.exception("CASHI POINT SETTLEMENT ERROR order=%s", order_id)

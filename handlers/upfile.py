@@ -29,6 +29,8 @@ from keyboards.join import join_kb
 from utils.force_sub import check_force_sub
 from utils.share_unlock import telegram_setting, share_url
 from utils.user_lang import get_user_language
+from utils.telecod_code import build_code
+
 
 
 router = Router()
@@ -461,18 +463,6 @@ async def copy_to_storage(
 # =========================================================
 # GENERATE UNIQUE CODE
 # =========================================================
-
-async def generate_code() -> str:
-    """Generate stable marketplace codes like Pastelebot_A18KA07JAMP1714."""
-    pool = await get_pool()
-    alphabet = string.ascii_uppercase + string.digits
-    while True:
-        suffix = "".join(secrets.choice(alphabet) for _ in range(14))
-        code = f"Pastelebot_{suffix}"
-        exists = await pool.fetchval("SELECT 1 FROM files WHERE LOWER(code)=LOWER($1) LIMIT 1", code)
-        if not exists:
-            return code
-
 
 # =========================================================
 # FORMAT RUPIAH
@@ -2195,7 +2185,14 @@ async def finalize_save(
         # GENERATE CODE
         # =================================================
 
-        code = await generate_code()
+        photo_count = sum(1 for item in media if item.get("type") == "photo")
+        video_count = sum(1 for item in media if item.get("type") == "video")
+        document_count = sum(1 for item in media if item.get("type") == "document")
+
+        photo_count = sum(1 for item in media if str(item.get('type', '')).lower() == 'photo')
+        video_count = sum(1 for item in media if str(item.get('type', '')).lower() == 'video')
+        document_count = sum(1 for item in media if str(item.get('type', '')).lower() in ('document', 'doc'))
+        code = build_code(photo_count, video_count, document_count)
 
         media_count = len(media)
 

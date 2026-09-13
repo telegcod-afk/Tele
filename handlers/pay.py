@@ -793,9 +793,9 @@ async def payment_method_keyboard(code: str, user_id: int | None = None):
     # Binance/USDT is handled manually by the owner via Telegram @ownergbot.
     binance_on = await setting("payment_binance_enabled", "off")
     L={
-      "id":("💳 Pembayaran", "📲 QR Otomatis 1 • Cashi", "⚡ QR Otomatis 2 • BayarGG", "📷 QR Manual", "₿ Binance / USDT", "❌ Batal", "❌ Pembayaran Tidak Tersedia"),
-      "en":("💳 Payment", "📲 Automatic QR 1 • Cashi", "⚡ Automatic QR 2 • BayarGG", "📷 Manual QR", "₿ Binance / USDT", "❌ Cancel", "❌ Payment Unavailable"),
-      "zh":("💳 支付", "📲 自动二维码 1 • Cashi", "⚡ 自动二维码 2 • BayarGG", "📷 手动二维码", "₿ Binance / USDT", "❌ 取消", "❌ 暂无可用支付方式")
+      "id":("💳 Pembayaran", "📲 QR Otomatis 1 ", "⚡ QR Otomatis 2 ", "📷 QR Manual", "₿ Binance / USDT", "❌ Batal", "❌ Pembayaran Tidak Tersedia"),
+      "en":("💳 Payment", "📲 Automatic QR 1 ", "⚡ Automatic QR 2 ", "📷 Manual QR", "₿ Binance / USDT", "❌ Cancel", "❌ Payment Unavailable"),
+      "zh":("💳 支付", "📲 自动二维码 1 ", "⚡ 自动二维码 2 ", "📷 手动二维码", "₿ Binance / USDT", "❌ 取消", "❌ 暂无可用支付方式")
     }[lang]
     buttons=[]
     if cashi_on: buttons.append([InlineKeyboardButton(text=L[1], callback_data=f"cashi:{code}")])
@@ -812,21 +812,59 @@ async def database_pool():
     return await get_pool()
 
 # ============================================================
+# CENTRAL PAYMENT NOTIFICATIONS
+# ============================================================
+async def _record_user_notification(pool, user_id: int, title: str, message: str, type_: str = "payment"):
+    try:
+        await pool.execute(
+            """INSERT INTO user_notifications(user_id,type,title,message) VALUES($1,$2,$3,$4)""",
+            int(user_id), type_, title, message,
+        )
+    except Exception:
+        logger.exception("USER NOTIFICATION INSERT ERROR user=%s", user_id)
+
+async def _notify_admins(bot, text: str, reply_markup=None):
+    sent = 0
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, text, parse_mode="HTML", reply_markup=reply_markup)
+            sent += 1
+        except Exception:
+            logger.exception("ADMIN PAYMENT NOTIFY ERROR admin=%s", admin_id)
+    return sent
+
+# ============================================================
 # POINT PURCHASE PAYMENT
 # ============================================================
-async def create_points_payment(call: CallbackQuery, points_amount: int):
-    """Central payment entry for point packages."""
+async def create_points_payment(call: CallbackQuery, points_amount: int, price_amount: int | None = None):
+    """Central payment entry for point packages.
+
+    points_amount is the number of points received; price_amount is the
+    actual rupiah amount paid. This fixes the old 20-point -> invalid-package
+    bug where the point quantity was incorrectly treated as the price.
+    """
     points_amount = safe_int(points_amount)
-    if points_amount not in {2000, 5000, 10000, 20000, 50000}:
+    price_amount = safe_int(price_amount if price_amount is not None else points_amount)
+    packages = {
+        20: 2000,
+        100: 5000,
+        200: 10000,
+        400: 20000,
+        1000: 50000,
+    }
+    if points_amount not in packages:
         return await call.answer("❌ Paket poin tidak valid.", show_alert=True)
+    if price_amount != packages[points_amount]:
+        price_amount = packages[points_amount]
+
     lang = await get_user_language(call.from_user.id)
     methods = await payment_methods_enabled()
     labels = {
         "id": ("💳 <b>PEMBAYARAN POIN</b>", "Pilih metode pembayaran untuk membeli poin."),
         "en": ("💳 <b>POINT PAYMENT</b>", "Choose a payment method to buy points."),
-        "zh": ("💳 <b>积分支付</b>", "请选择积分购买方式。"),
+        "zh": ("💳 <b>积分支付</b>", "请选择购买积分的支付方式。"),
     }[lang]
-    rows=[]
+    rows = []
     if methods.get("cashi"):
         rows.append([InlineKeyboardButton(text="📲 QR Otomatis 1 • Cashi", callback_data=f"pointpay:{points_amount}:cashi")])
     if methods.get("bayargg"):
@@ -836,69 +874,128 @@ async def create_points_payment(call: CallbackQuery, points_amount: int):
     if not rows:
         rows.append([InlineKeyboardButton(text="❌ Pembayaran tidak tersedia", callback_data="none")])
     rows.append([InlineKeyboardButton(text={"id":"⬅️ Kembali","en":"⬅️ Back","zh":"⬅️ 返回"}[lang], callback_data="points")])
-    text=f"{labels[0]}\n\n⭐ <b>{points_amount:,}</b> poin\n💰 <b>Rp {points_amount:,}</b>\n\n{labels[1]}".replace(",",".")
-    return await call.message.edit_text(text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    text = (
+        f"{labels[0]}\n\n⭐ <b>{points_amount:,}</b> poin\n"
+        f"💰 <b>Rp {price_amount:,}</b>\n\n{labels[1]}"
+    ).replace(",", ".")
+    return await call.message.edit_text(
+        text, parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+    )
 
 @router.callback_query(F.data.startswith("pointpay:"))
 async def pointpay_method(call: CallbackQuery):
-    parts=call.data.split(":")
-    if len(parts)!=3:
-        return await call.answer("❌ Data tidak valid.",show_alert=True)
-    amount=safe_int(parts[1]); method=parts[2].lower()
-    if amount not in {2000,5000,10000,20000,50000}:
-        return await call.answer("❌ Paket tidak valid.",show_alert=True)
-    if method=="cashi":
-        return await _create_points_provider(call,amount,"cashi")
-    if method=="bayargg":
-        return await _create_points_provider(call,amount,"bayargg")
-    return await call.answer("❌ Metode tersebut tidak tersedia untuk pembelian poin.",show_alert=True)
-
-async def _create_points_provider(call: CallbackQuery, amount: int, provider: str):
-    import uuid, qrcode
-    from io import BytesIO
-    uid=int(call.from_user.id); pool=await database_pool()
-    # One active order per user/provider/package.
-    existing=await pool.fetchrow(
-        "SELECT * FROM point_orders WHERE user_id=$1 AND provider=$2 AND status='pending' ORDER BY id DESC LIMIT 1",
-        uid,provider,
-    )
-    if existing and int(existing.get("points") or 0)==amount:
-        order_id=str(existing["order_id"]); qr=str(existing.get("qr_url") or "")
-        return await _send_point_qr(call,amount,order_id,qr,provider)
     try:
-        if provider=="cashi":
-            payment=await Cashi.create_payment(amount=amount,description=f"Buy {amount} points",customer_name=call.from_user.full_name)
-        else:
-            payment=await BayarGG.create_payment(amount=amount,description=f"Buy {amount} points",customer_name=call.from_user.full_name,payment_method="qris")
+        await call.answer()
     except Exception:
-        logger.exception("POINT %s CREATE ERROR",provider.upper())
+        pass
+    parts = call.data.split(":")
+    if len(parts) != 3:
+        return await call.answer("❌ Data tidak valid.", show_alert=True)
+    points_amount = safe_int(parts[1])
+    method = parts[2].lower()
+    packages = {20: 2000, 100: 5000, 200: 10000, 400: 20000, 1000: 50000}
+    if points_amount not in packages:
+        return await call.answer("❌ Paket tidak valid.", show_alert=True)
+    if method in {"cashi", "bayargg"}:
+        return await _create_points_provider(
+            call, points_amount, packages[points_amount], method
+        )
+    if method == "manual":
+        return await _create_points_manual(call, points_amount, packages[points_amount])
+    return await call.answer("❌ Metode tersebut tidak tersedia.", show_alert=True)
+
+async def _create_points_provider(call, points_amount: int, price_amount: int, provider: str):
+    import uuid
+    uid = int(call.from_user.id)
+    pool = await database_pool()
+    existing = await pool.fetchrow(
+        "SELECT * FROM point_orders WHERE user_id=$1 AND provider=$2 AND status='pending' ORDER BY id DESC LIMIT 1",
+        uid, provider,
+    )
+    if existing and int(existing["points"] or 0) == points_amount:
+        return await _send_point_qr(
+            call, points_amount, price_amount,
+            str(existing["order_id"]), str(existing["qr_url"] or ""), provider
+        )
+    try:
+        if provider == "cashi":
+            payment = await Cashi.create_payment(
+                amount=price_amount,
+                description=f"Buy {points_amount} points",
+                customer_name=call.from_user.full_name,
+            )
+        else:
+            payment = await BayarGG.create_payment(
+                amount=price_amount,
+                description=f"Buy {points_amount} points",
+                customer_name=call.from_user.full_name,
+                payment_method="qris",
+            )
+    except Exception:
+        logger.exception("POINT %s CREATE ERROR", provider.upper())
         return await call.message.answer(f"❌ Gagal membuat pembayaran {provider.title()}.")
     if not payment:
         return await call.message.answer(f"❌ Gagal membuat pembayaran {provider.title()}.")
-    order_id=str(payment.get("order_id") or payment.get("invoice_id") or payment.get("payment_id") or f"POINT-{uuid.uuid4().hex[:16].upper()}").strip()
-    qr=str(payment.get("qr_string") or payment.get("qris_string") or payment.get("qr_image") or payment.get("qr_url") or payment.get("qrUrl") or "")
-    expires=payment.get("expires_at")
+    order_id = str(
+        payment.get("order_id") or payment.get("invoice_id")
+        or payment.get("payment_id") or f"POINT-{uuid.uuid4().hex[:16].upper()}"
+    ).strip()
+    qr = str(
+        payment.get("qr_string") or payment.get("qris_string")
+        or payment.get("qr_image") or payment.get("qr_url")
+        or payment.get("qrUrl") or ""
+    )
+    expires = payment.get("expires_at")
     await pool.execute(
         """INSERT INTO point_orders(user_id,points,amount,provider,order_id,status,qr_url,expires_at)
            VALUES($1,$2,$3,$4,$5,'pending',$6,$7)
            ON CONFLICT(order_id) DO NOTHING""",
-        uid,amount,amount,provider,order_id,qr,expires
+        uid, points_amount, price_amount, provider, order_id, qr, expires
     )
-    return await _send_point_qr(call,amount,order_id,qr,provider)
+    return await _send_point_qr(
+        call, points_amount, price_amount, order_id, qr, provider
+    )
 
-async def _send_point_qr(call, amount: int, order_id: str, qr: str, provider: str):
+async def _create_points_manual(call: CallbackQuery, points_amount: int, price_amount: int):
+    """Manual QR uses the same central point order, but no provider API call."""
+    import uuid
+    pool = await database_pool()
+    uid = int(call.from_user.id)
+    order_id = f"POINT-MANUAL-{uuid.uuid4().hex[:16].upper()}"
+    qr = str(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_file_id") or MANUAL_QR_FILE_ID or "")
+    await pool.execute(
+        """INSERT INTO point_orders(user_id,points,amount,provider,order_id,status,qr_url)
+           VALUES($1,$2,$3,'manual',$4,'pending',$5)
+           ON CONFLICT(order_id) DO NOTHING""",
+        uid, points_amount, price_amount, order_id, qr
+    )
+    return await _send_point_qr(
+        call, points_amount, price_amount, order_id, qr, "manual"
+    )
+
+async def _send_point_qr(call, points_amount: int, price_amount: int, order_id: str, qr: str, provider: str):
     import qrcode
     from io import BytesIO
     lang=await get_user_language(call.from_user.id)
     name={"cashi":"📲 CASHI","bayargg":"⚡ BAYARGG"}.get(provider,provider.upper())
-    text={"id":f"💳 <b>PEMBELIAN POIN • {name}</b>\n\n⭐ Poin: <b>{amount:,}</b>\n💰 Harga: <b>Rp {amount:,}</b>\n\nScan QR lalu tekan <b>Cek Pembayaran</b>.".replace(",","."),
-          "en":f"💳 <b>POINT PURCHASE • {name}</b>\n\n⭐ Points: <b>{amount:,}</b>\n💰 Price: <b>Rp {amount:,}</b>\n\nScan the QR then press <b>Check Payment</b>.".replace(",","."),
-          "zh":f"💳 <b>购买积分 • {name}</b>\n\n⭐ 积分：<b>{amount:,}</b>\n💰 价格：<b>Rp {amount:,}</b>\n\n请扫描二维码，然后点击<b>检查支付</b>。".replace(",",".")}[lang]
+    text={"id":f"💳 <b>PEMBELIAN POIN • {name}</b>\n\n⭐ Poin: <b>{points_amount:,}</b>\n💰 Harga: <b>Rp {price_amount:,}</b>\n\nScan QR lalu tekan <b>Cek Pembayaran</b>.".replace(",","."),
+          "en":f"💳 <b>POINT PURCHASE • {name}</b>\n\n⭐ Points: <b>{points_amount:,}</b>\n💰 Price: <b>Rp {price_amount:,}</b>\n\nScan the QR then press <b>Check Payment</b>.".replace(",","."),
+          "zh":f"💳 <b>购买积分 • {name}</b>\n\n⭐ 积分：<b>{points_amount:,}</b>\n💰 价格：<b>Rp {price_amount:,}</b>\n\n请扫描二维码，然后点击<b>检查支付</b>。".replace(",",".")}[lang]
     kb=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text={"id":"🔄 Cek Pembayaran","en":"🔄 Check Payment","zh":"🔄 检查支付"}[lang],callback_data=f"points_check:{order_id}")],
         [InlineKeyboardButton(text={"id":"❌ Tutup","en":"❌ Close","zh":"❌ 关闭"}[lang],callback_data="points")]
     ])
     if qr:
+        # Manual QR stores a Telegram file_id. Send the actual QR image
+        # instead of turning the file_id into a QR payload.
+        if provider == "manual" and not qr.startswith(("http://", "https://", "data:image/")):
+            try:
+                return await call.message.answer_photo(
+                    qr, caption=text, parse_mode="HTML", reply_markup=kb
+                )
+            except Exception:
+                logger.exception("POINT MANUAL QR SEND ERROR")
         if qr.startswith(("http://","https://")):
             try: return await call.message.answer_photo(qr,caption=text,parse_mode="HTML",reply_markup=kb)
             except Exception: logger.exception("POINT QR URL SEND ERROR")
@@ -913,8 +1010,7 @@ async def _send_point_qr(call, amount: int, order_id: str, qr: str, provider: st
 async def payvip_method_bridge(call: CallbackQuery):
     try:
         from handlers.vip import vip_method
-        # Convert only the internal callback namespace; all entry still comes from pay.py.
-        call.data = call.data.replace("payvipmethod:", "vipmethod:", 1)
+        # vip_method accepts both central and legacy namespaces.
         return await vip_method(call)
     except Exception:
         logger.exception("PAY VIP METHOD ERROR")
@@ -924,7 +1020,7 @@ async def payvip_method_bridge(call: CallbackQuery):
 async def paycreator_method_bridge(call: CallbackQuery):
     try:
         from handlers.creator import creator_payment_method
-        call.data = call.data.replace("paycreatorpay:", "creatorpay:", 1)
+        # creator_payment_method accepts both central and legacy namespaces.
         return await creator_payment_method(call)
     except Exception:
         logger.exception("PAY CREATOR METHOD ERROR")
@@ -938,45 +1034,107 @@ async def paycreator_method_bridge(call: CallbackQuery):
 # hanya menyediakan implementasi provider dan helper; router entry tetap
 # berada di sini agar tidak ada jalur pembayaran kedua.
 
+def _product_method_rows(lang: str, prefix: str, methods: dict):
+    rows = []
+    labels = {
+        "cashi": {"id":"📲 QR Otomatis 1 ","en":"📲 Automatic QR 1 ","zh":"📲 自动二维码 1 "},
+        "bayargg": {"id":"⚡ QR Otomatis 2 ","en":"⚡ Automatic QR 2 ","zh":"⚡ 自动二维码 2 "},
+        "manual": {"id":"📷 QR Manual","en":"📷 Manual QR","zh":"📷 手动二维码"},
+    }
+    for method in ("cashi","bayargg","manual"):
+        if methods.get(method):
+            rows.append([InlineKeyboardButton(text=labels[method].get(lang, labels[method]["id"]), callback_data=f"{prefix}:{method}")])
+    if not rows:
+        rows.append([InlineKeyboardButton(text={"id":"❌ Pembayaran tidak tersedia","en":"❌ Payment unavailable","zh":"❌ 暂无可用支付方式"}[lang], callback_data="none")])
+    rows.append([InlineKeyboardButton(text={"id":"⬅️ Kembali","en":"⬅️ Back","zh":"⬅️ 返回"}[lang], callback_data="account")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+async def _central_vip_entry(call: CallbackQuery, package_id: str):
+    package_id = str(package_id).strip()
+    from config_vip import VIP_PACKAGES
+    paket = VIP_PACKAGES.get(package_id)
+    if not paket:
+        return await call.answer("❌ Paket VIP tidak ditemukan.", show_alert=True)
+    lang = await get_user_language(call.from_user.id)
+    methods = await payment_methods_enabled()
+    name = html.escape(str(paket.get("name") or package_id))
+    price = int(paket.get("price") or 0)
+    text = {
+        "id": "💎 <b>PEMBAYARAN VIP</b>\n\nPilih metode pembayaran:",
+        "en": "💎 <b>VIP PAYMENT</b>\n\nChoose a payment method:",
+        "zh": "💎 <b>VIP 支付</b>\n\n请选择支付方式：",
+    }[lang] + f"\n\n📦 <b>{name}</b>\n💰 <b>Rp {price:,}</b>".replace(",", ".")
+    await call.answer()
+    return await call.message.edit_text(text, parse_mode="HTML", reply_markup=_product_method_rows(lang, f"payvipmethod:{package_id}", methods))
+
+async def _central_creator_entry(call: CallbackQuery):
+    lang = await get_user_language(call.from_user.id)
+    methods = await payment_methods_enabled()
+    from handlers.creator import CREATOR_UPGRADE_PRICE
+    text = {
+        "id": "🎨 <b>PEMBAYARAN CREATOR</b>\n\nPilih metode pembayaran:",
+        "en": "🎨 <b>CREATOR PAYMENT</b>\n\nChoose a payment method:",
+        "zh": "🎨 <b>创作者支付</b>\n\n请选择支付方式：",
+    }[lang] + f"\n\n💰 <b>Rp {CREATOR_UPGRADE_PRICE:,}</b>".replace(",", ".")
+    await call.answer()
+    return await call.message.edit_text(text, parse_mode="HTML", reply_markup=_product_method_rows(lang, "paycreatorpay", methods))
+
+# ============================================================
+# ONE CENTRAL PRODUCT PAYMENT ENTRY
+# ============================================================
 @router.callback_query(F.data.startswith("buyvip:"))
 async def legacy_buyvip_entry(call: CallbackQuery):
-    # Legacy buttons are accepted but immediately enter the same central pay flow.
-    try:
-        from handlers.vip import buy_vip
-        call.data = call.data.replace("buyvip:", "buyvip:", 1)
-        return await buy_vip(call)
-    except Exception:
-        logger.exception("LEGACY VIP PAYMENT ENTRY ERROR")
-        return await call.message.answer("❌ Gagal membuka pembayaran VIP.")
+    return await _central_vip_entry(call, call.data.split(":",1)[1])
 
 @router.callback_query(F.data.startswith("payvip:"))
 async def payvip_entry(call: CallbackQuery):
-    try:
-        from handlers.vip import buy_vip
-        call.data = call.data.replace("payvip:", "buyvip:", 1)
-        return await buy_vip(call)
-    except Exception:
-        logger.exception("CENTRAL VIP PAYMENT ENTRY ERROR")
-        return await call.message.answer("❌ Gagal membuka pembayaran VIP.")
+    return await _central_vip_entry(call, call.data.split(":",1)[1])
 
 @router.callback_query(F.data == "creator_upgrade")
 async def legacy_creator_entry(call: CallbackQuery):
-    try:
-        from handlers.creator import creator_upgrade
-        return await creator_upgrade(call)
-    except Exception:
-        logger.exception("LEGACY CREATOR PAYMENT ENTRY ERROR")
-        return await call.message.answer("❌ Gagal membuka pembayaran Creator.")
+    return await _central_creator_entry(call)
 
 @router.callback_query(F.data == "paycreator")
 async def paycreator_entry(call: CallbackQuery):
-    try:
-        from handlers.creator import creator_upgrade
-        call.data = "creator_upgrade"
-        return await creator_upgrade(call)
-    except Exception:
-        logger.exception("CENTRAL CREATOR PAYMENT ENTRY ERROR")
-        return await call.message.answer("❌ Gagal membuka pembayaran Creator.")
+    return await _central_creator_entry(call)
+
+@router.callback_query(F.data.startswith("pointapprove:"))
+async def point_manual_approve(call: CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("❌ Bukan admin.", show_alert=True)
+    try: await call.answer()
+    except Exception: pass
+    try: oid=int(call.data.split(":",1)[1])
+    except Exception: return await call.answer("❌ Order tidak valid.", show_alert=True)
+    pool=await database_pool()
+    row=await pool.fetchrow("SELECT * FROM point_orders WHERE id=$1 AND provider='manual' AND status='verifying' FOR UPDATE",oid)
+    if not row: return await call.answer("❌ Order sudah diproses.", show_alert=True)
+    ok=await _settle_points_order_by_id(pool, row)
+    if not ok: return await call.answer("❌ Gagal menambahkan poin.", show_alert=True)
+    lang=await get_user_language(row["user_id"]); pts=await pool.fetchval("SELECT points FROM users WHERE user_id=$1",row["user_id"])
+    msg={"id":f"🎉 <b>Poin berhasil masuk!</b>\n\n⭐ +{row['points']} poin\n⭐ Total: <b>{pts}</b>\n\n💳 Pembayaran manual kamu telah disetujui admin.","en":f"🎉 <b>Points added successfully!</b>\n\n⭐ +{row['points']} points\n⭐ Total: <b>{pts}</b>\n\n💳 Your manual payment was approved by admin.","zh":f"🎉 <b>积分已到账！</b>\n\n⭐ +{row['points']} 积分\n⭐ 总计：<b>{pts}</b>\n\n💳 你的手动付款已获管理员批准。"}[lang]
+    await _record_user_notification(pool,row["user_id"],"Points Payment",msg)
+    await call.bot.send_message(row["user_id"],msg,parse_mode="HTML")
+    await call.message.edit_text("✅ <b>PEMBAYARAN POIN DISETUJUI</b>\n\n"+f"👤 <code>{row['user_id']}</code>\n⭐ +{row['points']} poin",parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("pointreject:"))
+async def point_manual_reject(call: CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("❌ Bukan admin.", show_alert=True)
+    await call.answer()
+    try: oid=int(call.data.split(":",1)[1])
+    except Exception: return
+    pool=await database_pool(); row=await pool.fetchrow("UPDATE point_orders SET status='rejected',updated_at=NOW() WHERE id=$1 AND provider='manual' AND status='verifying' RETURNING *",oid)
+    if not row: return await call.answer("❌ Order sudah diproses.",show_alert=True)
+    lang=await get_user_language(row['user_id']); msg={"id":"❌ <b>Pembayaran poin ditolak admin.</b>\n\nSilakan periksa pembayaran kamu dan lakukan kembali jika diperlukan.","en":"❌ <b>Point payment was rejected by admin.</b>\n\nPlease check your payment and try again if needed.","zh":"❌ <b>积分付款已被管理员拒绝。</b>\n\n请检查付款后重试。"}[lang]
+    await _record_user_notification(pool,row['user_id'],"Points Payment Rejected",msg)
+    try: await call.bot.send_message(row['user_id'],msg,parse_mode="HTML")
+    except Exception: pass
+    await call.message.edit_text("❌ <b>PEMBAYARAN POIN DITOLAK</b>\n\n"+f"👤 <code>{row['user_id']}</code>\n⭐ {row['points']} poin",parse_mode="HTML")
+
+async def _settle_points_order_by_id(pool, row):
+    if str(row['status']).lower() == 'paid': return True
+    return bool(await pool.fetchval("""SELECT public.add_points($1,$2,'purchase',$3,$4)""", row['user_id'], row['points'], f"points_purchase:{row['id']}", f"Buy {row['points']} points"))
 
 @router.callback_query(F.data.startswith("cashicheck:"))
 async def central_cashi_check(call: CallbackQuery):
@@ -3130,8 +3288,7 @@ async def complete_success_side_effects(
                     f"👤 User: "
                     f"<code>{masked}</code>\n"
                     f"💰 Harga: "
-                    f"<b>{format_rupiah(purchase.get('paid_price'))}</b>\n"
-                    f"💳 Payment: <b>{payment_name}</b>"
+                    f"<b>{format_rupiah(purchase.get('paid_price'))}</b>"
                 ),
                 parse_mode="HTML",
                 reply_markup=keyboard,

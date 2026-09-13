@@ -27,6 +27,7 @@ from utils.user_lang import get_user_language
 from utils.payment_methods import payment_methods_enabled, payment_selector_markup, qr_selector_markup
 from utils.cashi import Cashi
 from states import VipManualState
+from utils.payment_channel import send_payment_success_channel
 logger = logging.getLogger(__name__)
 router = Router()
 DEFAULT_LANGUAGE = "id"
@@ -547,7 +548,7 @@ async def buy_vip(
 async def vip_method(call: CallbackQuery):
     await safe_callback_answer(call)
     parts = call.data.split(":")
-    if len(parts) != 3:
+    if len(parts) != 3 or parts[0] not in {"vipmethod", "payvipmethod"}:
         return
     paket_id, method = parts[1], parts[2]
     paket = VIP_PACKAGES.get(paket_id)
@@ -1265,6 +1266,11 @@ async def vip_approve(
         logger.exception(
             "VIP APPROVE USER NOTIFY ERROR"
         )
+    await send_payment_success_channel(
+        call.bot, "vvip" if str(tier).lower() == "vvip" else "vip",
+        tx["user_id"], tx.get("amount"), tx.get("provider") or "manual",
+        paket.get("name") or tier, f"VIPM-{tx_id}"
+    )
     try:
         await call.message.edit_text(
             (
@@ -1550,4 +1556,12 @@ async def vip_wait(
         "en":f"🎉 <b>Payment successful!</b>\n\n💎 Account status: <b>{'VVIP' if is_vvip else 'VIP'}</b>\n📅 Duration: <b>{days} days</b>",
         "zh":f"🎉 <b>支付成功！</b>\n\n💎 账户状态：<b>{'VVIP' if is_vvip else 'VIP'}</b>\n📅 有效期：<b>{days} 天</b>",
     }[lang]
+    try:
+        await pool.execute("INSERT INTO user_notifications(user_id,type,title,message) VALUES($1,'payment','VIP Payment',$2)", call.from_user.id, msg)
+    except Exception:
+        logger.exception("VIP AUTO USER NOTIFICATION INSERT ERROR")
+    await send_payment_success_channel(
+        call.bot, "vvip" if is_vvip else "vip", call.from_user.id, tx.get("amount"),
+        tx.get("provider") or "-", paket.get("name") or ("VVIP" if is_vvip else "VIP"), invoice
+    )
     return await call.message.answer(msg,parse_mode="HTML")

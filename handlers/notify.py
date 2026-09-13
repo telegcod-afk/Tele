@@ -1,7 +1,7 @@
 """Text notification / direct-code detection handler.
 
 Responsibilities:
-- Detect Pastelebot codes sent as ordinary text.
+- Detect TeleCodbot codes sent as ordinary text.
 - Open valid codes with an inline button.
 - Offer upload when the text is not a valid code.
 - Keep FSM handlers untouched.
@@ -33,9 +33,9 @@ router = Router()
 # CODE REGEX
 # =========================================================
 
-# Pastelebot_ + exactly 14 alphanumeric characters.
+# TeleCodbot_ + exactly 14 alphanumeric characters.
 CODE_REGEX = re.compile(
-    r"(?<![A-Za-z0-9])Pastelebot_[A-Za-z0-9]{14}(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])TeleCodbot_[A-Za-z0-9]{14}(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 
@@ -513,7 +513,7 @@ async def notify_text(
         #
         # while $1 could still contain uppercase letters.
         #
-        # This caused valid Pastelebot codes to return NOT FOUND.
+        # This caused valid TeleCodbot codes to return NOT FOUND.
         pool = await get_pool()
 
         exists = await pool.fetchval(

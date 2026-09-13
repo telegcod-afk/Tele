@@ -1,92 +1,91 @@
 from aiogram import Router, F
-from aiogram.types import (
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton
-)
-
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database import get_pool
-from handlers.sendall import send_all
-from utils.user import get_user_status  # 🔥 TAMBAH INI
-from utils.points import get_points, fmt_points
-from utils.user_lang import get_user_language
 
 router = Router()
 
+LABELS = {
+    "id": {
+        "page": "📂 Open Page", "all": "📤 Open All",
+        "loading": "🔎 <b>Mencari Media Code...</b>\n\n⏳ Mohon tunggu sebentar...",
+        "menu": "📂 <b>OPEN MENU</b>\n\nPilih cara membuka media:",
+        "not_found": "❌ Code tidak ditemukan.",
+        "starting": "📤 Memulai pengiriman...",
+    },
+    "en": {
+        "page": "📂 Open Page", "all": "📤 Open All",
+        "loading": "🔎 <b>Searching Code Media...</b>\n\n⏳ Please wait a moment...",
+        "menu": "📂 <b>OPEN MENU</b>\n\nChoose how to open the media:",
+        "not_found": "❌ Code not found.",
+        "starting": "📤 Starting delivery...",
+    },
+    "zh": {
+        "page": "📂 打开页面", "all": "📤 全部打开",
+        "loading": "🔎 <b>正在查找 Code 媒体...</b>\n\n⏳ 请稍候...",
+        "menu": "📂 <b>打开菜单</b>\n\n请选择媒体打开方式：",
+        "not_found": "❌ 未找到 Code。",
+        "starting": "📤 开始发送...",
+    },
+}
 
-def open_keyboard(code, lang="id"):
-    labels = {
-        "id": ("📂 Open Page", "📤 Open All"),
-        "en": ("📂 Open Page", "📤 Open All"),
-        "zh": ("📂 打开页面", "📤 全部打开"),
-    }
-    page_label, all_label = labels.get(lang, labels["id"])
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=page_label,
-                    callback_data=f"page:{code}:1"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=all_label,
-                    callback_data=f"all:{code}"
-                )
-            ]
-        ]
-    )
+def open_keyboard(code: str, lang: str = "id"):
+    l = LABELS.get(lang, LABELS["id"])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=l["page"], callback_data=f"page:{code}:1")],
+        [InlineKeyboardButton(text=l["all"], callback_data=f"all:{code}")],
+    ])
 
-
-
-@router.callback_query(F.data.startswith("open_code:"))
-async def open_code_callback(call: CallbackQuery, state=None):
+async def _language(uid: int) -> str:
     try:
-        await call.answer("⏳ Opening...", show_alert=False)
+        pool = await get_pool()
+        return (await pool.fetchval(
+            "SELECT language FROM users WHERE user_id=$1", uid
+        ) or "id")
     except Exception:
-        pass
-    code = call.data.split(":", 1)[1].strip()
-    from handlers.getfile import process_code
-    from aiogram.fsm.context import FSMContext
-    # Callback has no FSM in this handler unless injected by aiogram; process_code
-    # accepts a tiny compatibility state, so use its own helper.
-    return await process_code(call.message, code)
+        return "id"
 
-@router.callback_query(F.data.startswith("all:"))
-async def open_all(call: CallbackQuery):
-    """Canonical Open All entry. Delivery/access logic lives in sendall.py."""
-    code = call.data.split(":", 1)[1].strip()
-    lang = await get_user_language(call.from_user.id)
-    ack = {"id":"⏳ Menyiapkan semua media...","en":"⏳ Preparing all media...","zh":"⏳ 正在准备全部媒体……"}.get(lang, "⏳ Menyiapkan semua media...")
-    try:
-        await call.answer(ack)
-    except Exception:
-        pass
-
+async def _show_open_menu(call: CallbackQuery, code: str):
     pool = await get_pool()
-    file = await pool.fetchrow(
-        """SELECT * FROM files
-           WHERE LOWER(TRIM(code)) = LOWER(TRIM($1))
-           LIMIT 1""",
+    exists = await pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM files WHERE lower(trim(code))=lower(trim($1)))",
         code,
     )
-    if not file:
-        try:
-            await call.answer(
-                {"id":"❌ File tidak ditemukan.","en":"❌ File not found.","zh":"❌ 找不到文件。"}.get(lang, "❌ File tidak ditemukan."),
-                show_alert=True,
-            )
-        except Exception:
-            pass
-        return
+    lang = await _language(call.from_user.id)
+    l = LABELS.get(lang, LABELS["id"])
+    if not exists:
+        return await call.answer(l["not_found"], show_alert=True)
+    await call.answer()
+    try:
+        await call.message.edit_text(
+            l["menu"], parse_mode="HTML",
+            reply_markup=open_keyboard(code, lang),
+        )
+    except Exception:
+        await call.message.answer(
+            l["menu"], parse_mode="HTML",
+            reply_markup=open_keyboard(code, lang),
+        )
 
-    user_level = await get_user_status(pool, call.from_user.id)
-    # send_all.py is the single canonical Open All implementation.
-    await send_all(
-        bot=call.bot,
-        chat_id=call.message.chat.id,
-        code=str(file.get("code") or code),
-        file=file,
-        user_level=user_level,
-    )
+# Keep both callback names for compatibility with Marketplace and typed-code flows.
+@router.callback_query(F.data.startswith("open:"))
+async def open_code_callback(call: CallbackQuery):
+    await _show_open_menu(call, call.data.split(":", 1)[1])
+
+@router.callback_query(F.data.startswith("open_code:"))
+async def open_code_legacy_callback(call: CallbackQuery):
+    await _show_open_menu(call, call.data.split(":", 1)[1])
+
+@router.callback_query(F.data.startswith("all:"))
+async def all_callback(call: CallbackQuery):
+    code = call.data.split(":", 1)[1]
+    lang = await _language(call.from_user.id)
+    l = LABELS.get(lang, LABELS["id"])
+    await call.answer()
+    # Edit the existing bubble immediately so there is no visible dead delay.
+    try:
+        await call.message.edit_text(l["loading"], parse_mode="HTML")
+    except Exception:
+        pass
+    from handlers.sendall import send_all
+    await send_all(call.message, code, user_id=call.from_user.id, lang=lang)
+
