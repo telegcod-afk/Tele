@@ -180,7 +180,7 @@ async def dashboard_text():
 
     return (
         "🛠 <b>ADMIN PANEL</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
+        "━━━━━━━━━━━━\n"
 
         "📊 <b>SYSTEM</b>\n"
         f"👤 User : <b>{users}</b>\n"

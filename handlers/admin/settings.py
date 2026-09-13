@@ -13,6 +13,7 @@ import asyncio
 
 from database import get_pool
 from handlers.admin.admins import is_admin
+from handlers.qrid import QRIDState
 
 
 router = Router()
@@ -66,6 +67,12 @@ class SchedulerState(StatesGroup):
 
 class MaintenanceState(StatesGroup):
     waiting_text = State()
+
+class BinanceAddressState(StatesGroup):
+    waiting = State()
+
+class BinanceAccountState(StatesGroup):
+    waiting = State()
 
 class SafetyState(StatesGroup):
     waiting_user_delay = State()
@@ -958,3 +965,107 @@ async def admin_share_unlock(call: CallbackQuery):
         ])
     )
     await call.answer()
+
+# =========================
+# PAYMENT METHOD CONTROL
+# =========================
+async def _payment_value(pool, key, default="off"):
+    v = await pool.fetchval("SELECT value FROM settings WHERE key=$1", key)
+    return str(v if v is not None else default).lower() in {"on","1","true","yes"}
+
+@router.callback_query(F.data == "admin_payment_methods")
+async def admin_payment_methods(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return await call.answer("❌ No access", show_alert=True)
+    await state.clear()
+    pool = await get_pool()
+    vals = {k: await _payment_value(pool,k,d) for k,d in [
+        ("payment_cashi_enabled","on"),("payment_bayargg_enabled","on"),
+        ("payment_manual_enabled","on"),("payment_binance_enabled","off")]} 
+    addr = await get_setting(pool,"binance_usdt_address","")
+    def icon(v): return "🟢 ON" if v else "🔴 OFF"
+    kb=InlineKeyboardMarkup(inline_keyboard=[
+      [InlineKeyboardButton(text=f"📲 Cashi ({icon(vals['payment_cashi_enabled'])})",callback_data="paytoggle:cashi")],
+      [InlineKeyboardButton(text=f"⚡ BayarGG ({icon(vals['payment_bayargg_enabled'])})",callback_data="paytoggle:bayargg")],
+      [InlineKeyboardButton(text=f"📷 QR Manual ({icon(vals['payment_manual_enabled'])})",callback_data="paytoggle:manual")],
+      [InlineKeyboardButton(text=f"₿ Binance / USDT ({icon(vals['payment_binance_enabled'])})",callback_data="paytoggle:binance")],
+      [InlineKeyboardButton(text="💬 Binance / USDT → @ownergbot",url="https://t.me/ownergbot")],
+      [InlineKeyboardButton(text="📷 Set QR Manual • /qrid",callback_data="qrid_help")],
+      [InlineKeyboardButton(text="⬅️ Back",callback_data="admin_settings")],
+    ])
+    await call.message.edit_text(
+      "💳 <b>PAYMENT METHODS</b>\n\n"
+      "Admin dapat membuka/menutup metode pembayaran secara realtime.\n\n"
+      "₿ Binance / USDT diarahkan ke @ownergbot.",
+      parse_mode="HTML", reply_markup=kb)
+    await call.answer()
+
+@router.callback_query(F.data.startswith("paytoggle:"))
+async def admin_payment_toggle(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return await call.answer("❌ No access", show_alert=True)
+    keymap={"cashi":"payment_cashi_enabled","bayargg":"payment_bayargg_enabled","manual":"payment_manual_enabled","binance":"payment_binance_enabled"}
+    name=call.data.split(":",1)[1]
+    key=keymap.get(name)
+    if not key: return await call.answer("❌ Invalid", show_alert=True)
+    pool=await get_pool(); current=await _payment_value(pool,key,"off")
+    await set_setting(pool,key,"off" if current else "on")
+    await call.answer("Updated")
+    return await admin_payment_methods(call, None)
+
+@router.callback_query(F.data == "paybinance_address")
+async def paybinance_address(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id): return await call.answer("❌ No access",show_alert=True)
+    await state.set_state(BinanceAddressState.waiting)
+    await call.message.answer("₿ Kirim alamat Binance / USDT sekarang. Sertakan network jika perlu (TRC20/ERC20/BEP20).")
+    await call.answer()
+
+@router.callback_query(F.data == "paybinance_account")
+async def paybinance_account(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await state.set_state(BinanceAccountState.waiting)
+    await call.message.answer("₿ Kirim username/account Binance atau label tujuan pembayaran sekarang.")
+    await call.answer()
+
+@router.message(BinanceAccountState.waiting, F.text)
+async def receive_binance_account(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    account = message.text.strip()
+    if not account:
+        return await message.answer("❌ Account Binance tidak boleh kosong.")
+    await set_setting(await get_pool(), "binance_account", account)
+    await state.clear()
+    await message.answer("✅ Akun Binance berhasil disimpan.")
+
+@router.callback_query(F.data == "qrid_help")
+async def qrid_help(call: CallbackQuery, state: FSMContext):
+    """Open the QR Manual setup flow directly from Admin > Payment Methods."""
+    if not is_admin(call.from_user.id):
+        return await call.answer("❌ No access", show_alert=True)
+
+    await call.answer()
+    await state.set_state(QRIDState.waiting_qr)
+    lang = "id"
+    try:
+        from utils.user_lang import get_user_language
+        lang = await get_user_language(call.from_user.id)
+    except Exception:
+        pass
+
+    prompt = {
+        "id": "📷 <b>SET QR MANUAL</b>\n\nKirim foto/gambar QR Manual sekarang di chat ini.\n\nBot akan menyimpan Chat ID, Message ID, dan File ID secara otomatis.",
+        "en": "📷 <b>SET MANUAL QR</b>\n\nSend the Manual QR image now in this chat.\n\nThe bot will automatically save the Chat ID, Message ID, and File ID.",
+        "zh": "📷 <b>设置手动二维码</b>\n\n请现在在此聊天中发送手动二维码图片。\n\n机器人会自动保存 Chat ID、Message ID 和 File ID。",
+    }.get(lang, "📷 <b>SET QR MANUAL</b>\n\nKirim foto/gambar QR Manual sekarang di chat ini.")
+
+    await call.message.answer(prompt, parse_mode="HTML")
+
+
+@router.message(BinanceAddressState.waiting, F.text)
+async def receive_binance_address(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    address=message.text.strip()
+    if len(address)<8: return await message.answer("❌ Alamat terlalu pendek.")
+    pool=await get_pool(); await set_setting(pool,"binance_usdt_address",address); await state.clear()
+    await message.answer("✅ Alamat Binance / USDT berhasil disimpan.")

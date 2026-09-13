@@ -98,6 +98,11 @@ async def admin_payments(
     )
 
     kb.button(
+        text="⚙️ Metode Pembayaran",
+        callback_data="admin_payment_methods"
+    )
+
+    kb.button(
         text="⬅ Admin Menu",
         callback_data="admin_home"
     )

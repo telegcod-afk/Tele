@@ -25,6 +25,8 @@ PAGE_SIZE = 10
 class FilesState(StatesGroup):
     waiting_code = State()
     waiting_price = State()
+    waiting_buy_code = State()
+    waiting_buy_user = State()
 # =========================
 # MENU FILE
 # =========================
@@ -85,6 +87,11 @@ async def admin_files(
     )
 
     kb.button(
+        text="🛒 Files Buy",
+        callback_data="files_buy"
+    )
+
+    kb.button(
         text="⬅ Admin Menu",
         callback_data="admin_home"
     )
@@ -105,6 +112,109 @@ async def admin_files(
     )
 
     await call.answer()
+
+
+# =========================
+# FILES BUY — ADMIN GRANT ACCESS
+# =========================
+@router.callback_query(F.data == "files_buy")
+async def files_buy_start(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return await call.answer("No Access", show_alert=True)
+    await state.clear()
+    await state.set_state(FilesState.waiting_buy_code)
+    await call.message.answer(
+        "🛒 <b>FILES BUY</b>\n\n"
+        "Kirim <b>CODE</b> yang ingin diberikan akses.\n\n"
+        "Contoh: <code>Telecodrobot_A18KA07JAMP1714</code>",
+        parse_mode="HTML",
+    )
+    await call.answer()
+
+
+@router.message(FilesState.waiting_buy_code, F.text)
+async def files_buy_code(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    code = message.text.strip()
+    pool = await get_pool()
+    file = await pool.fetchrow(
+        "SELECT code, title, price, is_paid FROM files WHERE LOWER(TRIM(code))=LOWER(TRIM($1))", code
+    )
+    if not file:
+        return await message.answer("❌ Code tidak ditemukan. Kirim code yang valid.")
+    await state.update_data(buy_code=file["code"])
+    await state.set_state(FilesState.waiting_buy_user)
+    await message.answer(
+        f"✅ Code: <code>{file['code']}</code>\n"
+        f"💰 Harga: <b>{rupiah(file['price']) if file['is_paid'] else 'FREE'}</b>\n\n"
+        "Sekarang kirim <b>ID user Telegram</b> yang boleh membuka code ini.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(FilesState.waiting_buy_user, F.text)
+async def files_buy_user(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    raw = message.text.strip()
+    try:
+        target_user = int(raw)
+    except ValueError:
+        return await message.answer("❌ ID user harus berupa angka Telegram.")
+    data = await state.get_data()
+    code = data.get("buy_code")
+    if not code:
+        await state.clear()
+        return await message.answer("❌ Sesi Files Buy sudah berakhir. Buka Files Buy lagi.")
+    pool = await get_pool()
+    file = await pool.fetchrow(
+        "SELECT code, title, price, is_paid, owner_id FROM files WHERE LOWER(TRIM(code))=LOWER(TRIM($1))", code
+    )
+    if not file:
+        await state.clear()
+        return await message.answer("❌ Code tidak ditemukan.")
+
+    # Admin grant is represented by a paid purchase, so Get File uses the
+    # same access check as normal successful payments.
+    await pool.execute(
+        """
+        INSERT INTO file_purchases
+            (user_id, code, file_code, owner_id, paid_price, payment_id, status, paid_at)
+        VALUES ($1,$2,$2,$3,$4,$5,'paid',NOW())
+        ON CONFLICT (code,user_id) DO UPDATE
+        SET status='paid', paid_price=EXCLUDED.paid_price, paid_at=NOW(), payment_id=EXCLUDED.payment_id
+        """,
+        target_user, file["code"], file["owner_id"], int(file["price"] or 0),
+        f"ADMIN-GRANT-{message.from_user.id}-{target_user}",
+    )
+    await state.clear()
+
+    # Notify the recipient. If the user has not started the bot, Telegram may
+    # reject the message; access itself remains granted in the database.
+    try:
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        await message.bot.send_message(
+            target_user,
+            "🎁 <b>ACCESS GRANTED</b>\n\n"
+            f"🔑 Code: <code>{file['code']}</code>\n"
+            "✅ Kamu sekarang sudah bisa membuka code ini.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="📂 Open Code", callback_data=f"grantopen:{file['code']}")
+            ]]),
+        )
+        notify = "\n📨 Notifikasi berhasil dikirim ke user."
+    except Exception:
+        notify = "\n⚠️ Akses berhasil diberikan, tetapi bot tidak dapat mengirim notifikasi ke user. Pastikan user sudah /start bot."
+
+    await message.answer(
+        "✅ <b>FILES BUY BERHASIL</b>\n\n"
+        f"🔑 Code: <code>{file['code']}</code>\n"
+        f"👤 User ID: <code>{target_user}</code>\n"
+        f"📦 Status: <b>ACCESS GRANTED</b>{notify}",
+        parse_mode="HTML",
+    )
 
 
 # =========================

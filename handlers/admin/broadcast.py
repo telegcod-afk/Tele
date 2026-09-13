@@ -22,8 +22,8 @@ from config import ADMIN_IDS
 router = Router()
 
 
-BATCH_SIZE = 20
-BASE_DELAY = 0.2
+BATCH_SIZE = 1
+BASE_DELAY = 0.8
 
 
 
@@ -282,139 +282,52 @@ async def target_select(
 # =========================
 
 
-async def send_engine(
-    msg,
-    targets,
-    pool,
-    progress
-):
+async def send_engine(msg, targets, pool, progress):
+    """Conservative sequential broadcast. TelegramRetryAfter always wins."""
+    total = len(targets)
+    success = failed = blocked = 0
 
-
-    total=len(targets)
-
-    success=0
-    failed=0
-    blocked=0
-
-
-    lock=asyncio.Lock()
-
-
-
-    async def worker(item):
-
-        nonlocal success,failed,blocked
-
-
-        cid=item["chat_id"]
-
-
-        for retry in range(3):
-
-            try:
-
-
-                await msg.copy_to(
-                    cid
-                )
-
-
-                async with lock:
-                    success+=1
-
-
-                return
-
-
-
-            except TelegramForbiddenError:
-
-
-                async with lock:
-                    blocked+=1
-
-
-                return
-
-
-
-            except TelegramRetryAfter as e:
-
-
-                await asyncio.sleep(
-                    e.retry_after
-                )
-
-
-
-            except Exception as e:
-
-                print(
-                    "SEND ERROR",
-                    cid,
-                    e
-                )
-
-                await asyncio.sleep(1)
-
-
-
-        async with lock:
-            failed+=1
-
-
-
-
-    for i in range(
-        0,
-        total,
-        BATCH_SIZE
-    ):
-
-
-        batch=targets[
-            i:i+BATCH_SIZE
-        ]
-
-
-        await asyncio.gather(
-            *[
-                worker(x)
-                for x in batch
-            ]
-        )
-
-
+    for i, item in enumerate(targets, start=1):
+        cid = item["chat_id"]
         try:
+            while True:
+                try:
+                    await msg.copy_to(cid)
+                    success += 1
+                    break
+                except TelegramRetryAfter as exc:
+                    await asyncio.sleep(max(float(exc.retry_after), 1.0) + 0.5)
+                except TelegramForbiddenError:
+                    blocked += 1
+                    break
+                except TelegramBadRequest as exc:
+                    text = str(exc).lower()
+                    if any(x in text for x in ("chat not found", "user is deactivated", "bot was blocked")):
+                        blocked += 1
+                    else:
+                        failed += 1
+                    break
+                except Exception:
+                    failed += 1
+                    break
+        finally:
+            try:
+                await progress.edit_text(
+                    "🚀 <b>Broadcast Running</b>\n\n"
+                    f"👥 Total : {total}\n"
+                    f"✅ Sent : {success}\n"
+                    f"🚫 Block : {blocked}\n"
+                    f"❌ Failed : {failed}\n\n"
+                    f"{i}/{total}",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
 
-            await progress.edit_text(
-                "🚀 <b>Broadcast Running</b>\n\n"
-                f"👥 Total : {total}\n"
-                f"✅ Sent : {success}\n"
-                f"🚫 Block : {blocked}\n"
-                f"❌ Failed : {failed}\n\n"
-                f"{min(i+BATCH_SIZE,total)}/{total}",
-                parse_mode="HTML"
-            )
+        if i < total:
+            await asyncio.sleep(BASE_DELAY)
 
-        except:
-            pass
-
-
-
-        await asyncio.sleep(
-            BASE_DELAY
-        )
-
-
-
-    return (
-        total,
-        success,
-        failed,
-        blocked
-    )
-
+    return total, success, failed, blocked
 
 
 # =========================
