@@ -40,11 +40,11 @@ UPDATE_DELAY = 0.5
 
 CODE_PREFIX = "Telecodrobot_"
 CODE_REGEX = re.compile(
-    r"(?<![A-Za-z0-9])Telecodrobot_\d+p\d+v\d+d_[zyx0-9]{11}(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])"
+    r"Telecodrobot_\d+p\d+v\d+d_[zyx0-9]{11}"
+    r"(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
-
-
 # ============================================================
 # USER LOCK
 # ============================================================
@@ -171,12 +171,6 @@ def safe_json(data):
 # ============================================================
 # CODE NORMALIZER
 # ============================================================
-
-CODE_REGEX = re.compile(
-    rf"(?<![A-Za-z0-9]){re.escape(CODE_PREFIX)}[A-Za-z0-9]{{{CODE_SUFFIX_LENGTH}}}(?![A-Za-z0-9])",
-    re.IGNORECASE,
-)
-
 
 def normalize_code(code: str) -> str:
     """
