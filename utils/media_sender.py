@@ -1,188 +1,156 @@
-"""Safe Telegram media delivery helpers."""
+"""
+Canonical media delivery helpers for TeleCod.
+
+All media delivery goes through stored Telegram message IDs when available.
+FREE/source media can use source_chat_id + message_id.
+Paid/storage media uses STORAGE_CHANNEL_ID + storage_message_id.
+
+The helper is deliberately sequential and RetryAfter-aware.
+"""
 import asyncio
-import logging
+from typing import Any, Optional
 
-from aiogram.exceptions import (
-    TelegramBadRequest,
-    TelegramForbiddenError,
-    TelegramRetryAfter,
-)
-
-from config import STORAGE_CHANNEL_ID
-from database import get_pool
-
-logger = logging.getLogger(__name__)
-
-# Keep concurrent CopyMessage calls low. RetryAfter remains the authority.
-# One outbound storage copy at a time. TelegramRetryAfter remains authoritative.
-_COPY_SEMAPHORE = asyncio.Semaphore(1)
-_COPY_DELAY = 1.0
-_BLOCKED_CHATS: set[int] = set()
+from aiogram.exceptions import TelegramRetryAfter, TelegramBadRequest, TelegramForbiddenError
 
 
+def _storage_chat_id() -> Optional[int]:
+    try:
+        from config import STORAGE_CHANNEL_ID
+        return int(STORAGE_CHANNEL_ID)
+    except Exception:
+        try:
+            from config import CHANNEL_DB
+            return int(CHANNEL_DB)
+        except Exception:
+            return None
 
-async def safe_copy_from_storage(
-    bot,
-    chat_id,
-    message_id,
-    *,
-    protect_content=False,
-    max_retries=6,
-    delay=_COPY_DELAY,
-    caption=None,
-):
-    """Copy one stored Telegram message with flood-control protection.
 
-    Returns the copied Message on success, or None for permanent failures.
-    RetryAfter is handled by waiting the exact server-provided duration.
+async def _retry_sleep(exc: TelegramRetryAfter) -> None:
+    await asyncio.sleep(max(1.0, float(getattr(exc, "retry_after", 1)) + 0.5))
+
+
+async def safe_copy_from_storage(bot, chat_id: int, message_id: int, **kwargs):
+    storage = _storage_chat_id()
+    if not storage or not message_id:
+        return None
+
+    for attempt in range(4):
+        try:
+            return await bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=storage,
+                message_id=int(message_id),
+                **kwargs,
+            )
+        except TelegramRetryAfter as e:
+            await _retry_sleep(e)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            return None
+        except Exception:
+            if attempt >= 3:
+                return None
+            await asyncio.sleep(1.5)
+    return None
+
+
+async def safe_copy_from_source(bot, chat_id: int, source_chat_id: int, message_id: int, **kwargs):
+    if not source_chat_id or not message_id:
+        return None
+
+    for attempt in range(4):
+        try:
+            return await bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=int(source_chat_id),
+                message_id=int(message_id),
+                **kwargs,
+            )
+        except TelegramRetryAfter as e:
+            await _retry_sleep(e)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            return None
+        except Exception:
+            if attempt >= 3:
+                return None
+            await asyncio.sleep(1.5)
+    return None
+
+
+async def safe_send_file_id(bot, chat_id: int, media: dict, caption: Optional[str] = None):
     """
-    try:
-        message_id = int(message_id)
-    except (TypeError, ValueError):
-        return None
-
-    retries = 0
-
-    try:
-        chat_key = int(chat_id)
-    except (TypeError, ValueError):
-        return None
-
-    # A known-invalid destination must not generate hundreds of identical
-    # Telegram requests/log lines during a batch.
-    if chat_key in _BLOCKED_CHATS:
-        logger.info("COPY SKIPPED INVALID CHAT | chat=%s | message=%s", chat_id, message_id)
-        return None
-
-    async with _COPY_SEMAPHORE:
-        while True:
-            try:
-                result = await bot.copy_message(
-                    chat_id=chat_id,
-                    from_chat_id=STORAGE_CHANNEL_ID,
-                    message_id=message_id,
-                    protect_content=protect_content,
-                    caption=caption,
-                    parse_mode="HTML" if caption else None,
-                )
-                effective_delay = delay
-                if delay == _COPY_DELAY:
-                    try:
-                        pool = await get_pool()
-                        setting = await pool.fetchval(
-                            "SELECT value FROM settings WHERE key=$1",
-                            "telegram_storage_delay",
-                        )
-                        effective_delay = max(0.0, float(setting)) if setting is not None else delay
-                    except Exception:
-                        effective_delay = delay
-                if effective_delay > 0:
-                    await asyncio.sleep(effective_delay)
-                return result
-
-            except TelegramRetryAfter as exc:
-                retries += 1
-                if retries > max_retries:
-                    logger.error(
-                        "COPY RETRY LIMIT | chat=%s | message=%s | retries=%s",
-                        chat_id, message_id, retries,
-                    )
-                    return None
-
-                wait_for = max(float(exc.retry_after), 1.0) + 0.5
-                logger.warning(
-                    "TELEGRAM FLOOD CONTROL | chat=%s | message=%s | wait=%.1fs | retry=%s/%s",
-                    chat_id, message_id, wait_for, retries, max_retries,
-                )
-                await asyncio.sleep(wait_for)
-
-            except TelegramForbiddenError as exc:
-                # Bot was blocked or lacks access. Do not hammer this chat again.
-                _BLOCKED_CHATS.add(chat_key)
-                logger.warning(
-                    "COPY DESTINATION BLOCKED | chat=%s | message=%s | error=%s",
-                    chat_id, message_id, exc,
-                )
-                return None
-
-            except TelegramBadRequest as exc:
-                error = str(exc).lower()
-                permanent = (
-                    "chat not found" in error
-                    or "user is deactivated" in error
-                    or "bot was blocked" in error
-                    or "message to copy not found" in error
-                    or "message not found" in error
-                )
-                if permanent and ("chat not found" in error or "user is deactivated" in error or "bot was blocked" in error):
-                    _BLOCKED_CHATS.add(chat_key)
-                logger.warning(
-                    "COPY PERMANENT ERROR | chat=%s | message=%s | permanent=%s | error=%s",
-                    chat_id, message_id, permanent, exc,
-                )
-                return None
-
-            except Exception as exc:
-                logger.exception(
-                    "COPY ERROR | chat=%s | message=%s | error=%s",
-                    chat_id, message_id, exc,
-                )
-                return None
-
-
-async def safe_copy_from_source(
-    bot,
-    chat_id,
-    source_chat_id,
-    message_id,
-    *,
-    protect_content=False,
-    max_retries=6,
-    delay=0.0,
-    caption=None,
-):
-    """Copy a FREE-upload message from its original private chat.
-
-    This avoids the storage channel entirely. The caller should only use this
-    for messages that were intentionally retained in the source chat.
+    file_id fallback. Used only if copy_message cannot be used.
     """
-    try:
-        message_id = int(message_id)
-        source_chat_id = int(source_chat_id)
-        chat_key = int(chat_id)
-    except (TypeError, ValueError):
+    file_id = media.get("file_id")
+    if not file_id:
         return None
-    if chat_key in _BLOCKED_CHATS:
-        return None
-    retries = 0
-    async with _COPY_SEMAPHORE:
-        while True:
+
+    file_type = str(media.get("file_type") or media.get("type") or "document").lower()
+    kwargs = {"chat_id": chat_id, "caption": caption}
+
+    for attempt in range(4):
+        try:
+            if file_type in {"photo", "image"}:
+                return await bot.send_photo(photo=file_id, **kwargs)
+            if file_type in {"video"}:
+                return await bot.send_video(video=file_id, **kwargs)
+            if file_type in {"audio"}:
+                return await bot.send_audio(audio=file_id, **kwargs)
+            if file_type in {"voice"}:
+                return await bot.send_voice(voice=file_id, **kwargs)
+            if file_type in {"animation", "gif"}:
+                return await bot.send_animation(animation=file_id, **kwargs)
+            return await bot.send_document(document=file_id, **kwargs)
+        except TelegramRetryAfter as e:
+            await _retry_sleep(e)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            return None
+        except Exception:
+            if attempt >= 3:
+                return None
+            await asyncio.sleep(1.5)
+    return None
+
+
+def media_message_id(media: dict) -> Optional[int]:
+    for key in (
+        "storage_message_id",
+        "channel_message_id",
+        "storage_id",
+        "message_id",
+    ):
+        value = media.get(key)
+        if value:
             try:
-                result = await bot.copy_message(
-                    chat_id=chat_id,
-                    from_chat_id=source_chat_id,
-                    message_id=message_id,
-                    protect_content=protect_content,
-                    caption=caption,
-                    parse_mode="HTML" if caption else None,
-                )
-                if delay > 0:
-                    await asyncio.sleep(delay)
-                return result
-            except TelegramRetryAfter as exc:
-                retries += 1
-                if retries > max_retries:
-                    return None
-                await asyncio.sleep(max(float(exc.retry_after), 1.0) + 0.5)
-            except TelegramForbiddenError:
-                _BLOCKED_CHATS.add(chat_key)
-                return None
-            except TelegramBadRequest as exc:
-                error = str(exc).lower()
-                if "chat not found" in error or "user is deactivated" in error or "bot was blocked" in error:
-                    _BLOCKED_CHATS.add(chat_key)
-                logger.warning("SOURCE COPY ERROR | source=%s message=%s error=%s", source_chat_id, message_id, exc)
-                return None
+                return int(value)
             except Exception:
-                logger.exception("SOURCE COPY ERROR | source=%s message=%s", source_chat_id, message_id)
-                return None
+                pass
+    return None
+
+
+async def deliver_one(bot, chat_id: int, media: dict, caption: Optional[str] = None):
+    """
+    Durable order:
+      1) storage message
+      2) original source message
+      3) file_id
+    """
+    mid = media_message_id(media)
+    source_chat = media.get("source_chat_id")
+
+    # A source_chat_id means message_id belongs to the original source.
+    if source_chat and mid:
+        result = await safe_copy_from_source(
+            bot, chat_id, int(source_chat), mid, caption=caption
+        )
+        if result:
+            return result
+
+    # No source chat => the message id is a storage/channel message.
+    if mid and not source_chat:
+        result = await safe_copy_from_storage(
+            bot, chat_id, mid, caption=caption
+        )
+        if result:
+            return result
+
+    return await safe_send_file_id(bot, chat_id, media, caption=caption)

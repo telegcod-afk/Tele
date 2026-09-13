@@ -5,7 +5,10 @@ from decimal import Decimal
 from typing import Optional
 from database import get_pool
 
-CHECKIN_REWARDS = [Decimal("0.5"), Decimal("1"), Decimal("1"), Decimal("1"), Decimal("1.5"), Decimal("2"), Decimal("3")]
+CHECKIN_REWARDS = [
+    Decimal("0.5"), Decimal("0.5"), Decimal("1"),
+    Decimal("1"), Decimal("1.5"), Decimal("2"), Decimal("3")
+]
 MEDIA_COST = Decimal("1.20")
 # Upload itself does NOT cost points. Reward is granted only for batches of 50 media.
 UPLOAD_REWARD_PER_50 = Decimal("10")
