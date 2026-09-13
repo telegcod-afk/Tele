@@ -114,15 +114,27 @@ def settings_kb(
 # ============================================================
 def other_menu_kb(lang: str = "id") -> InlineKeyboardMarkup:
     idn = lang == "id"
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [_button("📤 Share Code" if idn else "📤 Share Code", callback_data="share_code")],
-        [_button("📦 Code Saya" if idn else "📦 My Code", callback_data="my_code")],
-        [_button("🌐 Pilih Bahasa" if idn else "🌐 Language", callback_data="change_language")],
-        [_button("🏦 Metode Bank" if idn else "🏦 Bank Method", callback_data="ewallet")],
-        [_button("💸 Withdraw" if idn else "💸 Withdraw", callback_data="withdraw")],
-        [_button("⭐ Channel Review" if idn else "⭐ Review Channel", callback_data="channel_review")],
-        [_button("💳 Channel Transaksi" if idn else "💳 Transaction Channel", callback_data="channel_transaction")],
-        [_button("🔔 Channel Notifikasi" if idn else "🔔 Notification Channel", callback_data="channel_notification")],
-        [_button("❓ Help / Bantuan" if idn else "❓ Help", callback_data="help")],
-        [_button("⬅️ Kembali" if idn else "⬅️ Back", callback_data="home")],
-    ])
+    labels = (
+        "📤 Share Code" if idn else "📤 Share Code",
+        "📦 Code Saya" if idn else "📦 My Code",
+        "🌐 Pilih Bahasa" if idn else "🌐 Language",
+        "🏦 Metode Bank" if idn else "🏦 Bank Method",
+        "💸 Withdraw" if idn else "💸 Withdraw",
+        "⭐ Channel Review" if idn else "⭐ Review Channel",
+        "💳 Channel Transaksi" if idn else "💳 Transaction Channel",
+        "🔔 Channel Notifikasi" if idn else "🔔 Notification Channel",
+        "❓ Help / Bantuan" if idn else "❓ Help",
+        "⬅️ Kembali" if idn else "⬅️ Back",
+    )
+    callbacks = (
+        "share_code", "my_code", "change_language", "ewallet", "withdraw",
+        "channel_review", "channel_transaction", "channel_notification",
+        "help", "home"
+    )
+    rows = []
+    for i in range(0, len(labels), 2):
+        row = [_button(labels[i], callback_data=callbacks[i])]
+        if i + 1 < len(labels):
+            row.append(_button(labels[i+1], callback_data=callbacks[i+1]))
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
