@@ -1,0 +1,6 @@
+Canonical code: telecod_<photo>p<video>v<document>d_<random>
+Example: telecod_2p10v0d_C62Xy9zxy
+2p = 2 photo, 10v = 10 video, 0d = 0 document.
+Counts are generated from the actual uploaded media.
+Random suffix = 9 alphanumeric characters.
+Legacy TeleCodRobot/telecodrobot branding replaced by TeleCodRobot/telecodrobot.
