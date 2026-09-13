@@ -1,61 +1,75 @@
-"""Conservative Telegram API pacing.
+"""Telegram edit helpers.
 
-This reduces accidental request bursts and respects RetryAfter.
-It does NOT guarantee immunity from Telegram restrictions.
+Telegram treats an edit as invalid when the requested content/markup is
+identical to the current message. This is harmless, especially with double
+clicks and concurrent workers, so these wrappers suppress only that specific
+BadRequest while preserving every other Telegram error.
 """
-from __future__ import annotations
+import logging
+from functools import wraps
 
-import asyncio
-import os
-import time
-from collections import defaultdict
-from typing import Awaitable, Callable, TypeVar
+from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import Message
 
-T = TypeVar("T")
+logger = logging.getLogger(__name__)
 
-MIN_INTERVAL = max(0.15, float(os.getenv("TG_SAFE_MIN_INTERVAL", "0.35")))
-MAX_RETRY = max(1, int(os.getenv("TG_SAFE_MAX_RETRY", "4")))
-MAX_RETRY_AFTER = max(5, int(os.getenv("TG_SAFE_MAX_RETRY_AFTER", "60")))
-
-_lock = asyncio.Lock()
-_last_global = 0.0
-_last_chat: dict[int, float] = defaultdict(float)
+_ALREADY_PATCHED = "_mektpl_message_not_modified_safe"
 
 
-async def pace(chat_id: int | None = None) -> None:
-    global _last_global
-    async with _lock:
-        now = time.monotonic()
-        wait = max(0.0, MIN_INTERVAL - (now - _last_global))
-        if chat_id is not None:
-            wait = max(wait, MIN_INTERVAL - (now - _last_chat[chat_id]))
-        if wait:
-            await asyncio.sleep(wait)
-        now = time.monotonic()
-        _last_global = now
-        if chat_id is not None:
-            _last_chat[chat_id] = now
+def _is_not_modified(exc: BaseException) -> bool:
+    return (
+        isinstance(exc, TelegramBadRequest)
+        and "message is not modified" in str(exc).lower()
+    )
 
 
-async def safe_telegram_call(
-    fn: Callable[..., Awaitable[T]],
-    *args,
-    chat_id: int | None = None,
-    **kwargs,
-) -> T:
-    from aiogram.exceptions import TelegramRetryAfter
+def _wrap(method):
+    if getattr(method, _ALREADY_PATCHED, False):
+        return method
 
-    for attempt in range(MAX_RETRY):
-        await pace(chat_id)
+    @wraps(method)
+    async def wrapped(*args, **kwargs):
         try:
-            return await fn(*args, **kwargs)
-        except TelegramRetryAfter as exc:
-            if attempt >= MAX_RETRY - 1:
-                raise
-            delay = min(
-                max(int(getattr(exc, "retry_after", 1)), 1),
-                MAX_RETRY_AFTER,
-            )
-            await asyncio.sleep(delay)
+            return await method(*args, **kwargs)
+        except TelegramBadRequest as exc:
+            if _is_not_modified(exc):
+                logger.debug("Telegram ignored duplicate edit: %s", exc)
+                return None
+            raise
 
-    raise RuntimeError("Telegram API call exhausted retry budget")
+    setattr(wrapped, _ALREADY_PATCHED, True)
+    return wrapped
+
+
+def install_telegram_edit_guards() -> None:
+    """Guard every common aiogram message-edit operation globally.
+
+    This covers direct calls such as message.edit_text(), progress.edit_text(),
+    callback.message.edit_reply_markup(), and bot.edit_message_text().
+    """
+    message_methods = (
+        "edit_text",
+        "edit_caption",
+        "edit_reply_markup",
+        "edit_media",
+    )
+    bot_methods = (
+        "edit_message_text",
+        "edit_message_caption",
+        "edit_message_reply_markup",
+        "edit_message_media",
+    )
+
+    for name in message_methods:
+        method = getattr(Message, name, None)
+        if method is not None:
+            setattr(Message, name, _wrap(method))
+
+    for name in bot_methods:
+        method = getattr(Bot, name, None)
+        if method is not None:
+            setattr(Bot, name, _wrap(method))
+
+
+__all__ = ["install_telegram_edit_guards"]

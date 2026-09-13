@@ -1,5 +1,5 @@
 """
-Canonical media delivery helpers for TeleCod.
+Canonical media delivery helpers for TeleCodRobot.
 
 All media delivery goes through stored Telegram message IDs when available.
 FREE/source media can use source_chat_id + message_id.

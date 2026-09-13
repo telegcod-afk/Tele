@@ -8,6 +8,13 @@ logger = logging.getLogger(__name__)
 def _esc(v) -> str:
     return html.escape(str(v if v is not None else ""))
 
+def _mask_user_id(user_id) -> str:
+    value = str(user_id or "")
+    if len(value) <= 4:
+        return "****"
+    return f"{value[:2]}****{value[-2:]}"
+
+
 def _idr(value) -> str:
     try:
         return f"Rp {int(value):,}".replace(",", ".")
@@ -20,6 +27,7 @@ async def send_payment_success_channel(bot, kind: str, user_id: int, amount=None
     if not NOTIF_CHANNEL_ID:
         return False
     labels = {
+        "code": "💸 CODE PURCHASE SUCCESS",
         "points": "⭐ POINTS PURCHASE SUCCESS",
         "vip": "💎 VIP PURCHASE SUCCESS",
         "vvip": "💎 VVIP PURCHASE SUCCESS",
@@ -29,7 +37,7 @@ async def send_payment_success_channel(bot, kind: str, user_id: int, amount=None
     lines = [
         f"<b>{title}</b>",
         "━━━━━━━━━━━━━━━━━━",
-        f"👤 User: <code>{_esc(user_id)}</code>",
+        f"👤 User: <code>{_esc(_mask_user_id(user_id))}</code>",
     ]
     if item and item != "-":
         lines.append(f"📦 Item: <b>{_esc(item)}</b>")
