@@ -26,6 +26,7 @@ from utils.cashi import Cashi
 from utils.bayargg import BayarGG
 from utils.user_lang import get_user_language
 from utils.payment_methods import payment_methods_enabled
+from utils.payment_channel import send_payment_success_channel
 from config import (
     STORAGE_CHANNEL_ID,
     NOTIF_CHANNEL_ID,
@@ -33,6 +34,7 @@ from config import (
     MANUAL_QR_FILE_ID,
     CASHI_API_KEY,
 )
+
 logger = logging.getLogger(__name__)
 router = Router()
 # ============================================================
