@@ -53,7 +53,7 @@ COPY_DELAY = 1.5
 STORAGE_CONCURRENCY = 1
 
 # Channel review paid file.
-REVIEW_CHANNEL_ID = -1003984536150
+REVIEW_CHANNEL_ID = -1003993516320
 
 
 # =========================================================
