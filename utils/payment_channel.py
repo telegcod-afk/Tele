@@ -43,8 +43,6 @@ async def send_payment_success_channel(bot, kind: str, user_id: int, amount=None
         lines.append(f"📦 Item: <b>{_esc(item)}</b>")
     if amount is not None:
         lines.append(f"💰 Amount: <b>{_idr(amount)}</b>")
-    if payment and payment != "-":
-        lines.append(f"💳 Payment: <b>{_esc(str(payment).upper())}</b>")
     if reference and reference != "-":
         lines.append(f"🧾 ID: <code>{_esc(reference)}</code>")
     lines.append("━━━━━━━━━━━━━━━━━━")
